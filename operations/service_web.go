@@ -22,6 +22,7 @@ import (
 	"github.com/mongodb/grip/recovery"
 	"github.com/mongodb/jasper/remote"
 	"github.com/pkg/errors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/urfave/cli"
 )
 
@@ -95,6 +96,14 @@ func startWebService() cli.Command {
 				close(apiWait)
 			}()
 
+			promWait := make(chan struct{})
+			go func() {
+				defer recovery.LogStackTraceAndContinue("prometheus metric server")
+				http.Handle("/metrics", promhttp.Handler())
+				catcher.Add(http.ListenAndServe(":2112", nil))
+				close(promWait)
+			}()
+
 			uiWait := make(chan struct{})
 			go func() {
 				defer recovery.LogStackTraceAndContinue("ui server")
@@ -118,6 +127,7 @@ func startWebService() cli.Command {
 			go gracefulShutdownForSIGTERM(ctx, []*http.Server{uiServer, apiServer, adminServer}, gracefulWait, catcher, env)
 
 			<-apiWait
+			<-promWait
 			<-uiWait
 			<-adminWait
 

@@ -38,6 +38,13 @@ imports:
   - name: github.com/mitchellh/mapstructure
     version: 00c29f56e2386353d58c599509e8dc3801b0d716
 
+  - name: github.com/prometheus/client_golang/
+    version: 4a22844c5d69ab58ecb2c7cc83d4c846f6ffd742
+    subpackages:
+      - prometheus
+      - promauto
+      - promhttp
+
   - name: github.com/smartystreets/assertions
     version: f8459f92181409546d2762c9e9c4bedc23c92d76
   - name: github.com/smartystreets/goconvey
