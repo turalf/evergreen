@@ -1,31 +1,40 @@
 package metrics
 
-import "github.com/prometheus/client_golang/prometheus"
+import (
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+)
 
 var (
-	DbQueryCount = prometheus.NewCounter(
+	dbQueryCount = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Namespace: "evg",
 			Name:      "db_query_count",
 			Help:      "counts number of calls of db.Query()",
 		})
-	AllocatorHostRatio = prometheus.NewGauge(
+	allocatorHostRatio = promauto.NewGauge(
 		prometheus.GaugeOpts{
 			Namespace: "evg",
 			Name:      "allocator_host_ratio",
 			Help:      "counts host allocator hostQueueRatio",
 		})
 
-	FifteenSecondError = prometheus.NewCounter(
+	fifteenSecondCrons = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Namespace: "evg",
-			Name:      "fifteen_second_error",
-			Help:      "counts total # of errors in fifteen second units",
+			Name:      "fifteen_second_crons",
+			Help:      "counts total # of crons in fifteen second units",
 		})
 )
 
-func RegisterMetrics() {
-	prometheus.MustRegister(DbQueryCount)
-	prometheus.MustRegister(AllocatorHostRatio)
-	prometheus.MustRegister(FifteenSecondError)
+func IncDbQueryCount() {
+	dbQueryCount.Inc()
+}
+
+func SetAllocatorHostRatio(val float64) {
+	allocatorHostRatio.Set(val)
+}
+
+func IncFifteenSecondCrons() {
+	fifteenSecondCrons.Inc()
 }

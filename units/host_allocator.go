@@ -270,5 +270,5 @@ func (j *hostAllocatorJob) Run(ctx context.Context) {
 		"runner":                       scheduler.RunnerName,
 	})
 
-	metrics.AllocatorHostRatio.Set(float64(hostQueueRatio))
+	metrics.SetAllocatorHostRatio(float64(hostQueueRatio))
 }

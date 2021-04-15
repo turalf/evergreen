@@ -18,7 +18,7 @@ type Q struct {
 // Query creates a db.Q for the given MongoDB query. The filter
 // can be a struct, bson.D, bson.M, nil, etc.
 func Query(filter interface{}) Q {
-	metrics.DbQueryCount.Add(1)
+	metrics.IncDbQueryCount()
 	return Q{filter: filter}
 }
 

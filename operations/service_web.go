@@ -11,7 +11,6 @@ import (
 
 	"github.com/evergreen-ci/evergreen"
 	"github.com/evergreen-ci/evergreen/auth"
-	"github.com/evergreen-ci/evergreen/metrics"
 	"github.com/evergreen-ci/evergreen/service"
 	"github.com/evergreen-ci/gimlet"
 	"github.com/mongodb/amboy"
@@ -97,15 +96,6 @@ func startWebService() cli.Command {
 				close(apiWait)
 			}()
 
-			promWait := make(chan struct{})
-			go func() {
-				defer recovery.LogStackTraceAndContinue("prometheus metric server")
-				http.Handle("/metrics", promhttp.Handler())
-				metrics.RegisterMetrics()
-				catcher.Add(http.ListenAndServe(":2112", nil))
-				close(promWait)
-			}()
-
 			uiWait := make(chan struct{})
 			go func() {
 				defer recovery.LogStackTraceAndContinue("ui server")
@@ -125,13 +115,21 @@ func startWebService() cli.Command {
 				close(adminWait)
 			}()
 
+			promWait := make(chan struct{})
+			go func() {
+				defer recovery.LogStackTraceAndContinue("prometheus metric server")
+				http.Handle("/metrics", promhttp.Handler())
+				catcher.Add(http.ListenAndServe(":2112", nil))
+				close(promWait)
+			}()
+
 			gracefulWait := make(chan struct{})
 			go gracefulShutdownForSIGTERM(ctx, []*http.Server{uiServer, apiServer, adminServer}, gracefulWait, catcher, env)
 
 			<-apiWait
-			<-promWait
 			<-uiWait
 			<-adminWait
+			<-promWait
 
 			grip.Notice("waiting for web services to terminate gracefully")
 			<-gracefulWait
