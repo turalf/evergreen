@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/evergreen-ci/evergreen"
+	"github.com/evergreen-ci/evergreen/metrics"
 	"github.com/evergreen-ci/utility"
 	"github.com/mongodb/amboy"
 	"github.com/mongodb/amboy/dependency"
@@ -76,5 +77,6 @@ func (j *cronsRemoteFifteenSecondJob) Run(ctx context.Context) {
 		"num":   len(ops),
 		"errs":  j.ErrorCount,
 	})
+	metrics.IncFifteenSecondCrons()
 
 }
