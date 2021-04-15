@@ -1,6 +1,7 @@
 package db
 
 import (
+	"github.com/evergreen-ci/evergreen/metrics"
 	"github.com/pkg/errors"
 	"go.mongodb.org/mongo-driver/bson"
 )
@@ -17,6 +18,7 @@ type Q struct {
 // Query creates a db.Q for the given MongoDB query. The filter
 // can be a struct, bson.D, bson.M, nil, etc.
 func Query(filter interface{}) Q {
+	metrics.DbQueryCount.Add(1)
 	return Q{filter: filter}
 }
 

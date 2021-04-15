@@ -11,6 +11,7 @@ import (
 
 	"github.com/evergreen-ci/evergreen"
 	"github.com/evergreen-ci/evergreen/auth"
+	"github.com/evergreen-ci/evergreen/metrics"
 	"github.com/evergreen-ci/evergreen/service"
 	"github.com/evergreen-ci/gimlet"
 	"github.com/mongodb/amboy"
@@ -100,6 +101,7 @@ func startWebService() cli.Command {
 			go func() {
 				defer recovery.LogStackTraceAndContinue("prometheus metric server")
 				http.Handle("/metrics", promhttp.Handler())
+				metrics.RegisterMetrics()
 				catcher.Add(http.ListenAndServe(":2112", nil))
 				close(promWait)
 			}()

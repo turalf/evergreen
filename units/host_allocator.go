@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/evergreen-ci/evergreen"
+	"github.com/evergreen-ci/evergreen/metrics"
 	"github.com/evergreen-ci/evergreen/model"
 	"github.com/evergreen-ci/evergreen/model/distro"
 	"github.com/evergreen-ci/evergreen/model/event"
@@ -268,4 +269,6 @@ func (j *hostAllocatorJob) Run(ctx context.Context) {
 		"instance":                     j.ID(),
 		"runner":                       scheduler.RunnerName,
 	})
+
+	metrics.AllocatorHostRatio.Set(float64(hostQueueRatio))
 }

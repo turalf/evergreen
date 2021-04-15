@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/evergreen-ci/evergreen"
+	"github.com/evergreen-ci/evergreen/metrics"
 	"github.com/evergreen-ci/utility"
 	"github.com/mongodb/amboy"
 	"github.com/mongodb/amboy/dependency"
@@ -68,6 +69,8 @@ func (j *cronsRemoteFifteenSecondJob) Run(ctx context.Context) {
 		catcher.Add(op(ctx, queue))
 	}
 	j.ErrorCount = catcher.Len()
+
+	metrics.FifteenSecondError.Inc()
 
 	grip.Debug(message.Fields{
 		"id":    j.ID(),
