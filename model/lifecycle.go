@@ -271,7 +271,7 @@ func SetVersionPriority(versionId string, priority int64, caller string) error {
 	if err != nil {
 		return errors.Wrapf(err, "problem setting version '%s' priority", versionId)
 	}
-
+    //
 	// negative priority - these tasks should never run, so unschedule now
 	if priority < 0 {
 		var tasks []task.Task
@@ -289,7 +289,6 @@ func SetVersionPriority(versionId string, priority int64, caller string) error {
 			return errors.Wrap(err, "can't set cached tasks deactivated")
 		}
 	}
-	// To-do:
 	return nil
 }
 
