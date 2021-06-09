@@ -1808,7 +1808,7 @@ func (r *mutationResolver) RestartPatch(ctx context.Context, patchID string, abo
 	return &patchID, nil
 }
 
-func (r *mutationResolver) SetPatchPriority(ctx context.Context, patchID string, priority int) (*string, error) {
+func (r *mutationResolver) SetPatchPriority(ctx context.Context, patchID string, priority int) (*restModel.APIPatch, error) {
 	modifications := VersionModifications{
 		Action:   SetPriority,
 		Priority: int64(priority),
@@ -1817,7 +1817,14 @@ func (r *mutationResolver) SetPatchPriority(ctx context.Context, patchID string,
 	if err != nil {
 		return nil, err
 	}
-	return &patchID, nil
+	patch, err := r.sc.FindPatchById(patchID)
+	if err != nil {
+		return nil, ResourceNotFound.Send(ctx, fmt.Sprintf("error finding patch by id %s: %s", patchID, err.Error()))
+	}
+	if patch == nil {
+		return nil, ResourceNotFound.Send(ctx, fmt.Sprintf("cannot find patch with id %s", patchID))
+	}
+	return patch, err
 }
 
 func (r *mutationResolver) EnqueuePatch(ctx context.Context, patchID string, commitMessage *string) (*restModel.APIPatch, error) {
