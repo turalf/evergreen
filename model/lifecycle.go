@@ -261,7 +261,8 @@ func SetBuildPriority(buildId string, priority int64, caller string) error {
 	return nil
 }
 
-// SetVersionPriority updates the priority field of all tasks associated with the given version id.
+// SetVersionPriority updates the priority field of the patch as well as
+// the priority field of all tasks associated with the given version id.
 func SetVersionPriority(versionId string, priority int64, caller string) error {
 	_, err := task.UpdateAll(
 		bson.M{task.VersionKey: versionId},
@@ -288,7 +289,7 @@ func SetVersionPriority(versionId string, priority int64, caller string) error {
 			return errors.Wrap(err, "can't set cached tasks deactivated")
 		}
 	}
-
+	// To-do:
 	return nil
 }
 

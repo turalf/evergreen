@@ -856,8 +856,6 @@ type MutationResolver interface {
 	ClearMySubscriptions(ctx context.Context) (int, error)
 }
 type PatchResolver interface {
-	Priority(ctx context.Context, obj *model.APIPatch) (*int, error)
-
 	Duration(ctx context.Context, obj *model.APIPatch) (*PatchDuration, error)
 	Time(ctx context.Context, obj *model.APIPatch) (*PatchTime, error)
 	TaskCount(ctx context.Context, obj *model.APIPatch) (*int, error)
@@ -14282,13 +14280,13 @@ func (ec *executionContext) _Patch_priority(ctx context.Context, field graphql.C
 		Object:   "Patch",
 		Field:    field,
 		Args:     nil,
-		IsMethod: true,
+		IsMethod: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
 		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Patch().Priority(rctx, obj)
+		return obj.Priority, nil
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -14297,9 +14295,9 @@ func (ec *executionContext) _Patch_priority(ctx context.Context, field graphql.C
 	if resTmp == nil {
 		return graphql.Null
 	}
-	res := resTmp.(*int)
+	res := resTmp.(int)
 	fc.Result = res
-	return ec.marshalOInt2ᚖint(ctx, field.Selections, res)
+	return ec.marshalOInt2int(ctx, field.Selections, res)
 }
 
 func (ec *executionContext) _Patch_githash(ctx context.Context, field graphql.CollectedField, obj *model.APIPatch) (ret graphql.Marshaler) {
@@ -27790,16 +27788,7 @@ func (ec *executionContext) _Patch(ctx context.Context, sel ast.SelectionSet, ob
 				atomic.AddUint32(&invalids, 1)
 			}
 		case "priority":
-			field := field
-			out.Concurrently(i, func() (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._Patch_priority(ctx, field, obj)
-				return res
-			})
+			out.Values[i] = ec._Patch_priority(ctx, field, obj)
 		case "githash":
 			out.Values[i] = ec._Patch_githash(ctx, field, obj)
 			if out.Values[i] == graphql.Null {

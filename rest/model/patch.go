@@ -24,6 +24,7 @@ type APIPatch struct {
 	Branch                  *string           `json:"branch"`
 	Githash                 *string           `json:"git_hash"`
 	PatchNumber             int               `json:"patch_number"`
+	Priority 				int 			  `json:"priority"`
 	Author                  *string           `json:"author"`
 	Version                 *string           `json:"version"`
 	Status                  *string           `json:"status"`

@@ -141,6 +141,7 @@ type Patch struct {
 	Project         string                 `bson:"branch"`
 	Githash         string                 `bson:"githash"`
 	PatchNumber     int                    `bson:"patch_number"`
+	Priority        int 				   `bson:"priority"`
 	Author          string                 `bson:"author"`
 	Version         string                 `bson:"version"`
 	Status          string                 `bson:"status"`
@@ -584,6 +585,20 @@ func (p *Patch) SetActivation(activated bool) error {
 		bson.M{
 			"$set": bson.M{
 				ActivatedKey: activated,
+			},
+		},
+	)
+}
+
+//To-do:
+// SetPatchPriority sets a patch's priority to the desired priority
+func (p *Patch) SetPatchPriority(priority int) error {
+	p.Priority = priority
+	return UpdateOne(
+		bson.M{IdKey: p.Id},
+		bson.M{
+			"$set": bson.M{
+				PriorityKey: priority,
 			},
 		},
 	)
