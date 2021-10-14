@@ -171,6 +171,7 @@ func TestCLIFetchSource(t *testing.T) {
 
 		patches, err := ac.GetPatches(0)
 		So(err, ShouldBeNil)
+		So(patches, ShouldNotBeNil)
 		testTask, err := task.FindOne(
 			db.Query(bson.M{
 				task.VersionKey:      patches[0].Version,
