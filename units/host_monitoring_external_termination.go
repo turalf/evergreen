@@ -6,8 +6,10 @@ import (
 
 	"github.com/evergreen-ci/evergreen"
 	"github.com/evergreen-ci/evergreen/cloud"
+	"github.com/evergreen-ci/evergreen/model/distro"
 	"github.com/evergreen-ci/evergreen/model/event"
 	"github.com/evergreen-ci/evergreen/model/host"
+	"github.com/evergreen-ci/evergreen/model/task"
 	"github.com/mongodb/amboy"
 	"github.com/mongodb/amboy/dependency"
 	"github.com/mongodb/amboy/job"
@@ -117,7 +119,8 @@ func handleExternallyTerminatedHost(ctx context.Context, id string, env evergree
 
 	switch cloudStatus {
 	case cloud.StatusRunning:
-		if h.Status != evergreen.HostRunning {
+		userDataProvisioning := h.Distro.BootstrapSettings.Method == distro.BootstrapMethodUserData && h.Status == evergreen.HostStarting
+		if h.Status != evergreen.HostRunning && !userDataProvisioning {
 			grip.Info(message.Fields{
 				"op_id":   id,
 				"message": "found running host with incorrect status",
@@ -128,16 +131,25 @@ func handleExternallyTerminatedHost(ctx context.Context, id string, env evergree
 			return false, errors.Wrapf(h.MarkReachable(), "error updating reachability for host %s", h.Id)
 		}
 		return false, nil
-	case cloud.StatusStopped, cloud.StatusTerminated:
+	case cloud.StatusStopping, cloud.StatusStopped, cloud.StatusTerminated:
 		// Avoid accidentally terminating non-agent hosts that are stopped (e.g.
 		// spawn hosts).
-		if cloudStatus == cloud.StatusStopped && (h.UserHost || h.StartedBy != evergreen.User) {
-			return false, errors.New("non-agent host is stopped and should not be terminated")
+		if cloudStatus != cloud.StatusTerminated && (h.UserHost || h.StartedBy != evergreen.User) {
+			return false, errors.New("non-agent host is not already terminated and should not be terminated")
 		}
-
+		if h.SpawnOptions.SpawnedByTask {
+			if err := task.AddHostCreateDetails(h.SpawnOptions.TaskID, h.Id, h.SpawnOptions.TaskExecutionNumber, errors.New("host was externally terminated")); err != nil {
+				grip.Error(message.WrapError(err, message.Fields{
+					"message":      "error adding host create error details",
+					"cloud_status": cloudStatus.String(),
+					"host_id":      h.Id,
+					"task_id":      h.StartedBy,
+				}))
+			}
+		}
 		event.LogHostTerminatedExternally(h.Id, h.Status)
 
-		err := amboy.EnqueueUniqueJob(ctx, env.RemoteQueue(), NewHostTerminationJob(env, h, true, fmt.Sprintf("host was found in %s state", cloudStatus.String())))
+		err = amboy.EnqueueUniqueJob(ctx, env.RemoteQueue(), NewHostTerminationJob(env, h, true, fmt.Sprintf("host was found in %s state", cloudStatus.String())))
 		grip.Error(message.WrapError(err, message.Fields{
 			"message":      "could not enqueue job to terminate externally-modified host",
 			"cloud_status": cloudStatus.String(),

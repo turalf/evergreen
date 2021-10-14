@@ -20,6 +20,7 @@ func NewOktaUserManager(conf *evergreen.OktaConfig, evgURL, loginDomain string) 
 		ClientSecret:         conf.ClientSecret,
 		RedirectURI:          strings.TrimRight(evgURL, "/") + "/login/redirect/callback",
 		Issuer:               conf.Issuer,
+		Scopes:               conf.Scopes,
 		UserGroup:            conf.UserGroup,
 		CookiePath:           "/",
 		CookieDomain:         loginDomain,
@@ -38,7 +39,12 @@ func NewOktaUserManager(conf *evergreen.OktaConfig, evgURL, loginDomain string) 
 		ExternalCache: &usercache.ExternalOptions{
 			PutUserGetToken: user.PutLoginCache,
 			GetUserByToken:  func(token string) (gimlet.User, bool, error) { return user.GetLoginCache(token, expireAfter) },
-			ClearUserToken:  user.ClearLoginCache,
+			ClearUserToken: func(u gimlet.User, all bool) error {
+				if all {
+					return user.ClearAllLoginCaches()
+				}
+				return user.ClearLoginCache(u)
+			},
 			GetUserByID:     func(id string) (gimlet.User, bool, error) { return getUserByIdWithExpiration(id, expireAfter) },
 			GetOrCreateUser: getOrCreateUser,
 		},

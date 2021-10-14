@@ -30,6 +30,7 @@ import (
 	"github.com/mongodb/amboy"
 	"github.com/mongodb/amboy/queue"
 	. "github.com/smartystreets/goconvey/convey"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
 	mgobson "gopkg.in/mgo.v2/bson"
@@ -154,9 +155,14 @@ func TestAssignNextAvailableTaskWithDispatcherSettingsVersionLegacy(t *testing.T
 		settings := distro.DispatcherSettings{
 			Version: evergreen.DispatcherVersionLegacy,
 		}
-		if err := db.ClearCollections(distro.Collection, host.Collection, task.Collection, model.TaskQueuesCollection, model.ProjectRefCollection); err != nil {
-			t.Fatalf("clearing db: %v", err)
+
+		colls := []string{distro.Collection, host.Collection, task.Collection, model.TaskQueuesCollection, model.ProjectRefCollection}
+		if err := db.DropCollections(colls...); err != nil {
+			t.Fatalf("dropping collections: %s", err)
 		}
+		defer func() {
+			assert.NoError(t, db.DropCollections(colls...))
+		}()
 		if err := modelUtil.AddTestIndexes(host.Collection, true, true, host.RunningTaskKey); err != nil {
 			t.Fatalf("adding test indexes %v", err)
 		}
@@ -500,9 +506,13 @@ func TestAssignNextAvailableTaskWithDispatcherSettingsVersionTunable(t *testing.
 		settings := distro.DispatcherSettings{
 			Version: evergreen.DispatcherVersionRevisedWithDependencies,
 		}
-		if err := db.ClearCollections(distro.Collection, host.Collection, task.Collection, model.TaskQueuesCollection, model.ProjectRefCollection); err != nil {
-			t.Fatalf("clearing db: %v", err)
+		colls := []string{distro.Collection, host.Collection, task.Collection, model.TaskQueuesCollection, model.ProjectRefCollection}
+		if err := db.DropCollections(colls...); err != nil {
+			t.Fatalf("dropping collections: %v", err)
 		}
+		defer func() {
+			assert.NoError(t, db.DropCollections(colls...))
+		}()
 		if err := modelUtil.AddTestIndexes(host.Collection, true, true, host.RunningTaskKey); err != nil {
 			t.Fatalf("adding test indexes %v", err)
 		}
@@ -763,10 +773,13 @@ func TestNextTask(t *testing.T) {
 	queue := env.LocalQueue()
 
 	Convey("with tasks, a host, a build, and a task queue", t, func() {
-		if err := db.ClearCollections(model.ProjectRefCollection, host.Collection, task.Collection,
-			model.TaskQueuesCollection, build.Collection, evergreen.ConfigCollection); err != nil {
-			t.Fatalf("clearing db: %v", err)
+		colls := []string{model.ProjectRefCollection, host.Collection, task.Collection, model.TaskQueuesCollection, build.Collection, evergreen.ConfigCollection}
+		if err := db.DropCollections(colls...); err != nil {
+			t.Fatalf("dropping collections: %v", err)
 		}
+		defer func() {
+			assert.NoError(t, db.DropCollections(colls...))
+		}()
 		if err := modelUtil.AddTestIndexes(host.Collection, true, true, host.RunningTaskKey); err != nil {
 			t.Fatalf("adding test indexes %v", err)
 		}
@@ -822,13 +835,7 @@ func TestNextTask(t *testing.T) {
 		}
 		So(task2.Insert(), ShouldBeNil)
 
-		testBuild := build.Build{
-			Id: buildID,
-			Tasks: []build.TaskCache{
-				{Id: "task1"},
-				{Id: "task2"},
-			},
-		}
+		testBuild := build.Build{Id: buildID}
 		So(testBuild.Insert(), ShouldBeNil)
 
 		task3 := task.Task{
@@ -1086,12 +1093,7 @@ func TestNextTask(t *testing.T) {
 						Provisioned:   true,
 						Status:        evergreen.HostRunning,
 					}
-					anotherBuild := build.Build{
-						Id: "anotherBuild",
-						Tasks: []build.TaskCache{
-							{Id: t1.Id},
-						},
-					}
+					anotherBuild := build.Build{Id: "anotherBuild"}
 
 					So(anotherBuild.Insert(), ShouldBeNil)
 					So(anotherHost.Insert(), ShouldBeNil)
@@ -1127,12 +1129,7 @@ func TestNextTask(t *testing.T) {
 							AgentRevision: evergreen.AgentVersion,
 						}
 						So(h3.Insert(), ShouldBeNil)
-						anotherBuild := build.Build{
-							Id: "b",
-							Tasks: []build.TaskCache{
-								{Id: inactiveTask.Id},
-							},
-						}
+						anotherBuild := build.Build{Id: "b"}
 						So(anotherBuild.Insert(), ShouldBeNil)
 						Convey("the inactive task should not be returned and the host running task should be unset", func() {
 							resp := getNextTaskEndpoint(t, as, h3.Id, sent)
@@ -1203,10 +1200,13 @@ func TestTaskLifecycleEndpoints(t *testing.T) {
 	defer cancel()
 
 	Convey("with tasks, a host, a build, and a task queue", t, func() {
-		if err := db.ClearCollections(host.Collection, task.Collection, model.TaskQueuesCollection, build.Collection,
-			model.ParserProjectCollection, model.ProjectRefCollection, model.VersionCollection, alertrecord.Collection, event.AllLogCollection); err != nil {
-			t.Fatalf("clearing db: %v", err)
+		colls := []string{host.Collection, task.Collection, model.TaskQueuesCollection, build.Collection, model.ParserProjectCollection, model.ProjectRefCollection, model.VersionCollection, alertrecord.Collection, event.AllLogCollection}
+		if err := db.DropCollections(colls...); err != nil {
+			t.Fatalf("dropping collections: %v", err)
 		}
+		defer func() {
+			assert.NoError(t, db.DropCollections(colls...))
+		}()
 
 		q := queue.NewLocalLimitedSize(4, 2048)
 		if err := q.Start(ctx); err != nil {
@@ -1231,6 +1231,10 @@ func TestTaskLifecycleEndpoints(t *testing.T) {
 		proj := model.ProjectRef{
 			Id: projectId,
 		}
+		parserProj := model.ParserProject{
+			Id: versionId,
+		}
+		So(parserProj.Insert(), ShouldBeNil)
 		So(proj.Insert(), ShouldBeNil)
 
 		task1 := task.Task{
@@ -1260,12 +1264,7 @@ func TestTaskLifecycleEndpoints(t *testing.T) {
 		So(sampleHost.Insert(), ShouldBeNil)
 
 		testBuild := build.Build{
-			Id: buildID,
-			Tasks: []build.TaskCache{
-				{Id: "task1"},
-				{Id: "task2"},
-				{Id: "dt"},
-			},
+			Id:      buildID,
 			Project: projectId,
 			Version: versionId,
 		}
@@ -1464,11 +1463,6 @@ func TestTaskLifecycleEndpoints(t *testing.T) {
 				dbTask, err := task.FindOne(task.ById(displayTask.Id))
 				So(err, ShouldBeNil)
 				So(dbTask.Status, ShouldEqual, evergreen.TaskFailed)
-			})
-			Convey("the build cache should be updated correctly", func() {
-				dbBuild, err := build.FindOne(build.ById(buildID))
-				So(err, ShouldBeNil)
-				So(dbBuild.Tasks[2].Status, ShouldEqual, evergreen.TaskFailed)
 			})
 		})
 	})

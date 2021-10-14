@@ -263,6 +263,11 @@ mciModule.controller('TaskCtrl', function ($scope, $rootScope, $now, $timeout, $
   $scope.permissions = $window.permissions || {};
 
   $scope.triggers = [{
+      trigger: "task-started",
+      resource_type: "TASK",
+      label: "this task starts",
+    },
+    {
       trigger: "outcome",
       resource_type: "TASK",
       label: "this task finishes",
@@ -271,6 +276,11 @@ mciModule.controller('TaskCtrl', function ($scope, $rootScope, $now, $timeout, $
       trigger: "failure",
       resource_type: "TASK",
       label: "this task fails",
+    },
+    {
+      trigger: "task-failed-or-blocked",
+      resource_type: "TASK",
+      label: "this task fails or is blocked",
     },
     {
       trigger: "success",
@@ -351,46 +361,11 @@ mciModule.controller('TaskCtrl', function ($scope, $rootScope, $now, $timeout, $
     return testResult.test_result.status === 'pass';
   };
 
-  $scope.getURL = function (testResult, isRaw) {
-    var url = (isRaw) ? testResult.url_raw : testResult.url;
-    let prefix = '/test_log/';
-    let raw = 'text=true';
-    let lineNum = '#L' + (testResult.line_num || 0);
-    if (url == '' && testResult.log_id) {
-      if (isRaw) {
-        url = prefix + testResult.log_id + '?' +  raw;
-      } else  {
-        url = prefix + testResult.log_id + lineNum;
-      }
-    } else if (url == '') {
-      var group_id = '?group_id='
-      group_id += (testResult.group_id) ? testResult.group_id : ""
-      var test_name = (testResult.log_test_name) ? testResult.log_test_name : testResult.test_file;
-      url = prefix + testResult.task_id + '/' + testResult.execution + '/' + test_name + group_id
-      if (isRaw) {
-          url  += '&' + raw;
-      } else {
-          url += lineNum;
-      }
-    }
-
-    return url;
-  };
-
   $scope.execTaskUrl = function (taskId, execution) {
     if (execution >= 0) {
       return '/task/' + taskId + '/' + execution;
     }
     return '/task/' + taskId;
-  };
-
-  $scope.hideURL = function (testResult, isRaw) {
-    var url = isRaw ? testResult.url_raw : testResult.url;
-    return !((url != '') || (testResult.log_id) || (testResult.task_id != '' && testResult.display_name != ''));
-  };
-
-  $scope.hasBothURL = function (testResult) {
-    return !($scope.hideURL(testResult) || $scope.hideURL(testResult, 'raw'))
   };
 
   var hash = $locationHash.get();

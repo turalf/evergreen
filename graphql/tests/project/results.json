@@ -27,6 +27,17 @@
       }
     },
     {
+      "query_file": "create-project.graphql",
+      "result": {
+        "data": {
+          "createProject": {
+            "identifier": "catVideos",
+            "repo": "catGenerator"
+          }
+        }
+      }
+    },
+    {
       "query_file": "patches-default-params.graphql",
       "result": {
         "data": {
@@ -36,6 +47,35 @@
                 { "id": "5e4ff3abe3c3317e352062e8" },
                 { "id": "5e4ff3abe3c3317e352062e7" },
                 { "id": "5e4ff3abe3c3317e352062e9" }
+              ],
+              "filteredPatchCount": 3
+            }
+          }
+        }
+      }
+    },
+    {
+      "query_file": "patches-authorDisplayName.graphql",
+      "result": {
+        "data": {
+          "project": {
+            "patches": {
+              "patches": [
+                {
+                  "id": "5e4ff3abe3c3317e352062e8",
+                  "author": "testuser",
+                  "authorDisplayName": "testuser"
+                },
+                {
+                  "id": "5e4ff3abe3c3317e352062e7",
+                  "author": "testuser",
+                  "authorDisplayName": "testuser"
+                },
+                {
+                  "id": "5e4ff3abe3c3317e352062e9",
+                  "author": "testuser",
+                  "authorDisplayName": "testuser"
+                }
               ],
               "filteredPatchCount": 3
             }
@@ -68,7 +108,7 @@
       "result": {
         "errors": [
           {
-            "message": "Error finding project by id not a real project: project ref 'not a real project' does not exist",
+            "message": "Error finding project by id not a real project: 404 (Not Found): project with id 'not a real project' not found",
             "path": ["project"],
             "extensions": {
               "code": "INTERNAL_SERVER_ERROR"

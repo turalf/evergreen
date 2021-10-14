@@ -57,6 +57,8 @@ func NewPeriodicBuildJob(projectID, definitionID string) amboy.Job {
 	j.DefinitionID = definitionID
 	ts := utility.RoundPartOfHour(15)
 	j.SetID(fmt.Sprintf("%s-%s-%s-%s", periodicBuildJobName, projectID, definitionID, ts))
+	j.SetScopes([]string{fmt.Sprintf("%s.%s.%s", periodicBuildJobName, projectID, definitionID)})
+	j.SetShouldApplyScopesOnEnqueue(true)
 	j.UpdateTimeInfo(amboy.JobTimeInfo{WaitUntil: ts})
 
 	return j
@@ -109,7 +111,7 @@ func (j *periodicBuildJob) addVersion(ctx context.Context, definition model.Peri
 	if err != nil {
 		return "", errors.Wrap(err, "error getting github token")
 	}
-	configFile, err := thirdparty.GetGithubFile(ctx, token, j.project.Owner, j.project.Repo, definition.ConfigFile, "")
+	configFile, err := thirdparty.GetGithubFile(ctx, token, j.project.Owner, j.project.Repo, definition.ConfigFile, j.project.Branch)
 	if err != nil {
 		return "", errors.Wrap(err, "error getting config file from github")
 	}
@@ -118,7 +120,13 @@ func (j *periodicBuildJob) addVersion(ctx context.Context, definition model.Peri
 		return "", errors.Wrap(err, "error decoding config file")
 	}
 	proj := &model.Project{}
-	intermediateProject, err := model.LoadProjectInto(configBytes, j.project.Id, proj)
+	opts := &model.GetProjectOpts{
+		Ref:          j.project,
+		Revision:     j.project.Branch,
+		Token:        token,
+		ReadFileFrom: model.ReadfromGithub,
+	}
+	intermediateProject, err := model.LoadProjectInto(ctx, configBytes, opts, j.project.Id, proj)
 	if err != nil {
 		return "", errors.Wrap(err, "error parsing config file")
 	}

@@ -8,6 +8,7 @@ import (
 	"github.com/evergreen-ci/evergreen/model"
 	"github.com/evergreen-ci/evergreen/model/user"
 	"github.com/evergreen-ci/evergreen/repotracker"
+	"github.com/evergreen-ci/utility"
 	"github.com/pkg/errors"
 )
 
@@ -67,7 +68,7 @@ func TriggerDownstreamVersion(args ProcessorArgs) (*model.Version, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "error getting evergreen settings")
 	}
-	upstreamProject, err := model.FindOneProjectRef(args.SourceVersion.Identifier)
+	upstreamProject, err := model.FindMergedProjectRef(args.SourceVersion.Identifier)
 	if err != nil {
 		return nil, errors.Wrap(err, "error finding project ref")
 	}
@@ -92,7 +93,7 @@ func TriggerDownstreamVersion(args ProcessorArgs) (*model.Version, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "error adding build break subscriptions")
 	}
-	_, err = model.DoProjectActivation(args.DownstreamProject.Id)
+	_, err = model.DoProjectActivation(args.DownstreamProject.Id, time.Now())
 	if err != nil {
 		return nil, errors.Wrapf(err, "error activating project %s", args.DownstreamProject.Id)
 	}
@@ -193,7 +194,7 @@ func makeDownstreamProjectFromCommand(identifier, command, generateFile string) 
 		},
 	}
 	pp := &model.ParserProject{
-		Identifier: identifier,
+		Identifier: utility.ToStringPtr(identifier),
 	}
 
 	pp.AddTask(fullProject.Tasks[0].Name, fullProject.Tasks[0].Commands)

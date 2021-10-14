@@ -24,7 +24,7 @@ import (
 	"github.com/mongodb/grip/sometimes"
 	"github.com/pkg/errors"
 	mgobson "gopkg.in/mgo.v2/bson"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -211,6 +211,9 @@ func (j *patchIntentProcessor) finishPatch(ctx context.Context, patchDoc *patch.
 	if err != nil {
 		return errors.Wrap(err, "can't find patch project")
 	}
+	if pref == nil {
+		return errors.Errorf("no project ref '%s' found", patchDoc.Project)
+	}
 
 	// hidden projects can only run PR patches
 	if !pref.IsEnabled() && (j.IntentType != patch.GithubIntentType || !pref.IsHidden()) {
@@ -244,7 +247,7 @@ func (j *patchIntentProcessor) finishPatch(ctx context.Context, patchDoc *patch.
 		}
 		return errors.Wrap(err, "can't get patched config")
 	}
-	if errs := validator.CheckProjectSyntax(project); len(errs) != 0 {
+	if errs := validator.CheckProjectSyntax(project, false); len(errs) != 0 {
 		if errs = errs.AtLevel(validator.Error); len(errs) != 0 {
 			validationCatcher.Errorf("invalid patched config syntax: %s", validator.ValidationErrorsToString(errs))
 		}
@@ -336,7 +339,7 @@ func (j *patchIntentProcessor) finishPatch(ctx context.Context, patchDoc *patch.
 	}
 	patchDoc.Id = j.PatchID
 
-	if err = j.processTriggerAliases(ctx, patchDoc, pref); err != nil {
+	if _, err = ProcessTriggerAliases(ctx, patchDoc, pref, j.env, patchDoc.Triggers.Aliases); err != nil {
 		return errors.Wrap(err, "problem processing trigger aliases")
 	}
 
@@ -359,12 +362,34 @@ func (j *patchIntentProcessor) finishPatch(ctx context.Context, patchDoc *patch.
 		if err = buildSub.Upsert(); err != nil {
 			catcher.Add(errors.Wrap(err, "failed to insert build subscription for Github PR"))
 		}
+		waitOnChilSub := event.NewGithubStatusAPISubscriber(event.GithubPullRequestSubscriber{
+			Owner:    patchDoc.GithubPatchData.BaseOwner,
+			Repo:     patchDoc.GithubPatchData.BaseRepo,
+			PRNumber: patchDoc.GithubPatchData.PRNumber,
+			Ref:      patchDoc.GithubPatchData.HeadHash,
+			Type:     event.WaitOnChild,
+		})
 		if patchDoc.IsParent() {
+			// add a subscription on each child patch to report it's status to github when it's done.
 			for _, childPatch := range patchDoc.Triggers.ChildPatches {
-				patchSub := event.NewExpiringPatchOutcomeSubscription(childPatch, ghSub)
+				childGhStatusSub := event.NewGithubStatusAPISubscriber(event.GithubPullRequestSubscriber{
+					Owner:    patchDoc.GithubPatchData.BaseOwner,
+					Repo:     patchDoc.GithubPatchData.BaseRepo,
+					PRNumber: patchDoc.GithubPatchData.PRNumber,
+					Ref:      patchDoc.GithubPatchData.HeadHash,
+					ChildId:  childPatch,
+					Type:     event.SendChildPatchOutcome,
+				})
+				patchSub := event.NewExpiringPatchOutcomeSubscription(childPatch, childGhStatusSub)
 				if err = patchSub.Upsert(); err != nil {
 					catcher.Add(errors.Wrap(err, "failed to insert child patch subscription for Github PR"))
 				}
+				// add subscription so that the parent can wait on the children
+				patchSub = event.NewExpiringPatchOutcomeSubscription(childPatch, waitOnChilSub)
+				if err = patchSub.Upsert(); err != nil {
+					catcher.Add(errors.Wrap(err, "failed to insert patch subscription for Github PR"))
+				}
+
 			}
 		}
 	}
@@ -454,9 +479,9 @@ func (j *patchIntentProcessor) getPreviousPatchDefinition(project *model.Project
 	return res, nil
 }
 
-func (j *patchIntentProcessor) processTriggerAliases(ctx context.Context, p *patch.Patch, projectRef *model.ProjectRef) error {
-	if len(p.Triggers.Aliases) == 0 {
-		return nil
+func ProcessTriggerAliases(ctx context.Context, p *patch.Patch, projectRef *model.ProjectRef, env evergreen.Environment, aliasNames []string) ([]string, error) {
+	if len(aliasNames) == 0 {
+		return nil, nil
 	}
 
 	type aliasGroup struct {
@@ -465,10 +490,10 @@ func (j *patchIntentProcessor) processTriggerAliases(ctx context.Context, p *pat
 		parentAsModule string
 	}
 	aliasGroups := make(map[aliasGroup][]patch.PatchTriggerDefinition)
-	for _, aliasName := range p.Triggers.Aliases {
+	for _, aliasName := range aliasNames {
 		alias, found := projectRef.GetPatchTriggerAlias(aliasName)
 		if !found {
-			return errors.Errorf("patch trigger alias '%s' is not defined", aliasName)
+			return nil, errors.Errorf("patch trigger alias '%s' is not defined", aliasName)
 		}
 
 		// group patches on project, status, parentAsModule
@@ -481,6 +506,7 @@ func (j *patchIntentProcessor) processTriggerAliases(ctx context.Context, p *pat
 	}
 
 	triggerIntents := make([]patch.Intent, 0, len(aliasGroups))
+	childPatchIds := make([]string, 0, len(aliasGroups))
 	for group, definitions := range aliasGroups {
 		triggerIntent := patch.NewTriggerIntent(patch.TriggerIntentOptions{
 			ParentID:       p.Id.Hex(),
@@ -493,17 +519,18 @@ func (j *patchIntentProcessor) processTriggerAliases(ctx context.Context, p *pat
 		})
 
 		if err := triggerIntent.Insert(); err != nil {
-			return errors.Wrap(err, "problem inserting trigger intent")
+			return nil, errors.Wrap(err, "problem inserting trigger intent")
 		}
 
 		triggerIntents = append(triggerIntents, triggerIntent)
-		p.Triggers.ChildPatches = append(p.Triggers.ChildPatches, triggerIntent.ID())
+		childPatchIds = append(childPatchIds, triggerIntent.ID())
 	}
+	p.Triggers.ChildPatches = append(p.Triggers.ChildPatches, childPatchIds...)
 
 	for _, intent := range triggerIntents {
 		triggerIntent, ok := intent.(*patch.TriggerIntent)
 		if !ok {
-			return errors.Errorf("intent '%s' didn't not have expected type '%T'", intent.ID(), intent)
+			return nil, errors.Errorf("intent '%s' didn't not have expected type '%T'", intent.ID(), intent)
 		}
 
 		job := NewPatchIntentProcessor(mgobson.ObjectIdHex(intent.ID()), intent)
@@ -512,15 +539,15 @@ func (j *patchIntentProcessor) processTriggerAliases(ctx context.Context, p *pat
 			// we need the child patch intents to exist when the parent patch is finalized.
 			job.Run(ctx)
 			if err := job.Error(); err != nil {
-				return errors.Wrap(err, "problem processing child patch")
+				return nil, errors.Wrap(err, "problem processing child patch")
 			}
 		} else {
-			if err := j.env.RemoteQueue().Put(ctx, job); err != nil {
-				return errors.Wrap(err, "problem enqueueing child patch processing")
+			if err := env.RemoteQueue().Put(ctx, job); err != nil {
+				return nil, errors.Wrap(err, "problem enqueueing child patch processing")
 			}
 		}
 	}
-	return nil
+	return childPatchIds, nil
 }
 
 func (j *patchIntentProcessor) buildCliPatchDoc(ctx context.Context, patchDoc *patch.Patch, githubOauthToken string) error {
@@ -535,7 +562,7 @@ func (j *patchIntentProcessor) buildCliPatchDoc(ctx context.Context, patchDoc *p
 		}))
 	}()
 
-	projectRef, err := model.FindOneProjectRef(patchDoc.Project)
+	projectRef, err := model.FindMergedProjectRef(patchDoc.Project)
 	if err != nil {
 		return errors.Wrapf(err, "Could not find project ref '%s'", patchDoc.Project)
 	}

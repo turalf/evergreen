@@ -15,12 +15,11 @@ import (
 	"github.com/evergreen-ci/evergreen/model/event"
 	"github.com/evergreen-ci/evergreen/model/notification"
 	"github.com/evergreen-ci/evergreen/model/task"
+	"github.com/evergreen-ci/evergreen/plugin"
 	"github.com/evergreen-ci/evergreen/thirdparty"
 	"github.com/evergreen-ci/evergreen/trigger"
 	"github.com/evergreen-ci/evergreen/units"
 	"github.com/evergreen-ci/utility"
-	"github.com/mitchellh/mapstructure"
-	"github.com/mongodb/grip"
 	"github.com/pkg/errors"
 )
 
@@ -34,14 +33,13 @@ type FailingTaskData struct {
 	Execution int    `bson:"execution"`
 }
 
-// bbFileTicket creates a JIRA ticket for a task with the given test failures.
+// BbFileTicket creates a JIRA ticket for a task with the given test failures.
 func BbFileTicket(context context.Context, taskId string, execution int) (bool, error) {
 	taskNotFound := false
 	// Find information about the task
 	t, err := task.FindOne(task.ById(taskId))
 	if err != nil {
 		return taskNotFound, err
-
 	}
 	if t == nil {
 		taskNotFound = true
@@ -50,19 +48,23 @@ func BbFileTicket(context context.Context, taskId string, execution int) (bool, 
 	env := evergreen.GetEnvironment()
 	settings := env.Settings()
 	queue := env.RemoteQueue()
-	buildBaronProjects := BbGetConfig(settings)
+	bbProject, ok := plugin.BbGetProject(settings, t.Project, t.Version)
+	if !ok {
+		return taskNotFound, errors.Errorf("error finding build baron plugin for task '%s'", taskId)
+	}
 
-	//if there is a custom web-hook, use that
-	annotationSettings := buildBaronProjects[t.Project].TaskAnnotationSettings
-	webHook := annotationSettings.FileTicketWebHook
-	if webHook.Endpoint != "" {
+	webHook, ok, err := plugin.IsWebhookConfigured(t.Project, t.Version)
+	if err != nil {
+		return taskNotFound, errors.Wrapf(err, "Error retrieving webhook config for %s", t.Project)
+	}
+	if ok && webHook.Endpoint != "" {
 		var resp *http.Response
 		resp, err = fileTicketCustomHook(context, taskId, execution, webHook)
 		return resp.StatusCode == http.StatusOK, err
 	}
 
 	//if there is no custom web-hook, use the build baron
-	n, err := makeNotification(settings, buildBaronProjects[t.Project].TicketCreateProject, t)
+	n, err := makeNotification(settings, bbProject.TicketCreateProject, t)
 	if err != nil {
 		return taskNotFound, err
 	}
@@ -74,12 +76,6 @@ func BbFileTicket(context context.Context, taskId string, execution int) (bool, 
 	}
 
 	return taskNotFound, nil
-}
-
-func IsWebhookConfigured(t *task.Task) bool {
-	buildBaronProjects := BbGetConfig(evergreen.GetEnvironment().Settings())
-	webHook := buildBaronProjects[t.Project].TaskAnnotationSettings.FileTicketWebHook
-	return webHook.Endpoint != ""
 }
 
 // fileTicketCustomHook uses a custom hook to create a ticket for a task with the given test failures.
@@ -191,9 +187,7 @@ func GetSearchReturnInfo(taskId string, exec string) (*thirdparty.SearchReturnIn
 		return nil, bbConfig, err
 	}
 	settings := evergreen.GetEnvironment().Settings()
-	buildBaronProjects := BbGetConfig(settings)
-	bbProj, ok := buildBaronProjects[t.Project]
-
+	bbProj, ok := plugin.BbGetProject(settings, t.Project, t.Version)
 	if !ok {
 		// build baron project not found, meaning it's not configured for
 		// either regular build baron or for a custom ticket filing webhook
@@ -232,47 +226,27 @@ func GetSearchReturnInfo(taskId string, exec string) (*thirdparty.SearchReturnIn
 	return &thirdparty.SearchReturnInfo{Issues: tickets, Search: jql, Source: source, FeaturesURL: featuresURL}, bbConfig, nil
 }
 
-func BbGetConfig(settings *evergreen.Settings) map[string]evergreen.BuildBaronProject {
-	bbconf, ok := settings.Plugins["buildbaron"]
-	if !ok {
-		return nil
-	}
-
-	projectConfig, ok := bbconf["projects"]
-	if !ok {
-		grip.Error("no build baron projects configured")
-		return nil
-	}
-
-	projects := map[string]evergreen.BuildBaronProject{}
-	err := mapstructure.Decode(projectConfig, &projects)
-	if err != nil {
-		grip.Critical(errors.Wrap(err, "unable to parse bb project config"))
-	}
-
-	return projects
-}
-
 func BbGetTask(taskId string, executionString string) (*task.Task, error) {
 	execution, err := strconv.Atoi(executionString)
 	if err != nil {
-		return nil, errors.Wrap(err, "Invalid execution number")
+		return nil, errors.Wrap(err, "invalid execution number")
 	}
+
 	t, err := task.FindOneIdOldOrNew(taskId, execution)
 	if err != nil {
-		return nil, errors.Wrap(err, "problem finding task")
+		return nil, errors.Wrap(err, "finding task")
 	}
 	if t == nil {
-		return nil, errors.Errorf("No task found for taskId: %s and execution: %d", taskId, execution)
+		return nil, errors.Errorf("no task found for task id: %s and execution: %d", taskId, execution)
 	}
-	if t.DisplayOnly {
-		t.LocalTestResults, err = t.GetTestResultsForDisplayTask()
-		if err != nil {
-			return nil, errors.Wrapf(err, "Problem finding test results for display task '%s'", t.Id)
-		}
+
+	if err = t.PopulateTestResults(); err != nil {
+		return nil, errors.Wrap(err, "populating test results")
 	}
+
 	return t, nil
 }
+
 func (js *JiraSuggest) GetTimeout() time.Duration {
 	// This function is never called because we are willing to wait forever for the fallback handler
 	// to return JIRA ticket results.
@@ -301,7 +275,7 @@ type MultiSourceSuggest struct {
 }
 
 type JiraSuggest struct {
-	BbProj      evergreen.BuildBaronProject
+	BbProj      evergreen.BuildBaronSettings
 	JiraHandler thirdparty.JiraHandler
 }
 

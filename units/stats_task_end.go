@@ -6,6 +6,7 @@ import (
 
 	"github.com/evergreen-ci/evergreen"
 	"github.com/evergreen-ci/evergreen/cloud"
+	"github.com/evergreen-ci/evergreen/model"
 	"github.com/evergreen-ci/evergreen/model/host"
 	"github.com/evergreen-ci/evergreen/model/task"
 	"github.com/mongodb/amboy"
@@ -77,7 +78,7 @@ func (j *collectTaskEndDataJob) Run(ctx context.Context) {
 	}
 	// The task was restarted before the job ran.
 	if j.task == nil {
-		j.task, err = task.FindOneOldNoMergeByIdAndExecution(j.TaskID, j.Execution)
+		j.task, err = task.FindOneOldByIdAndExecution(j.TaskID, j.Execution)
 		j.AddError(err)
 		if err != nil {
 			return
@@ -130,6 +131,16 @@ func (j *collectTaskEndDataJob) Run(ctx context.Context) {
 		"variant":              j.task.BuildVariant,
 		"version":              j.task.Version,
 	}
+
+	if j.task.DisplayTask != nil {
+		msg["display_task_id"] = j.task.DisplayTask.Id
+	}
+
+	pRef, err := model.FindBranchProjectRef(j.task.Project)
+	if pRef != nil {
+		msg["project_identifier"] = pRef.Identifier
+	}
+	j.AddError(err)
 
 	if cloud.IsEc2Provider(j.host.Distro.Provider) && len(j.host.Distro.ProviderSettingsList) > 0 {
 		instanceType, ok := j.host.Distro.ProviderSettingsList[0].Lookup("instance_type").StringValueOK()

@@ -55,53 +55,20 @@ func (s *taskDispatchService) FindNextTask(distroID string, spec TaskSpec) (*Tas
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-
 	return distroDispatchService.FindNextTask(spec), nil
 }
 
 func (s *taskDispatchService) RefreshFindNextTask(distroID string, spec TaskSpec) (*TaskQueueItem, error) {
-	start := time.Now()
 	distroDispatchService, err := s.ensureQueue(distroID)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	grip.DebugWhen(time.Since(start).Seconds() > 1, message.Fields{
-		"step":            "RefreshFindNextTask",
-		"distro":          distroID,
-		"dispatcher_type": distroDispatchService.Type(),
-		"op":              "ensureQueue",
-		"duration":        time.Since(start),
-		"duration_secs":   time.Since(start).Seconds(),
-	})
-	start = time.Now()
 
 	if err := distroDispatchService.Refresh(); err != nil {
 		return nil, errors.WithStack(err)
 	}
-	grip.DebugWhen(time.Since(start).Seconds() > 1, message.Fields{
-		"step":            "RefreshFindNextTask",
-		"distro":          distroID,
-		"dispatcher_type": distroDispatchService.Type(),
-		"op":              "Refresh",
-		"duration":        time.Since(start),
-		"duration_secs":   time.Since(start).Seconds(),
-	})
-	start = time.Now()
 
-	item := distroDispatchService.FindNextTask(spec)
-	msg := message.Fields{
-		"step":            "RefreshFindNextTask",
-		"distro":          distroID,
-		"dispatcher_type": distroDispatchService.Type(),
-		"op":              "FindNextTask",
-		"duration":        time.Since(start),
-		"duration_secs":   time.Since(start).Seconds(),
-	}
-	if item != nil {
-		msg["item"] = item.Id
-	}
-	grip.DebugWhen(time.Since(start).Seconds() > 1, msg)
-	return item, nil
+	return distroDispatchService.FindNextTask(spec), nil
 }
 
 func (s *taskDispatchService) Refresh(distroID string) error {
@@ -199,7 +166,7 @@ func newDistroTaskDispatchService(taskQueue TaskQueue, typeName string, ttl time
 		ttl:      ttl,
 		typeName: typeName,
 	}
-	start := time.Now()
+
 	if taskQueue.Length() != 0 {
 		d.rebuild(taskQueue.Queue)
 	}
@@ -214,8 +181,6 @@ func newDistroTaskDispatchService(taskQueue TaskQueue, typeName string, ttl time
 		"num_schedulableunits": len(d.units),
 		"num_orders":           len(d.order),
 		"num_taskqueueitems":   taskQueue.Length(),
-		"duration":             time.Since(start),
-		"duration_secs":        time.Since(start).Seconds(),
 	})
 
 	return d
@@ -458,7 +423,7 @@ func (d *basicCachedDispatcherImpl) nextTaskGroupTask(unit schedulableUnit) *Tas
 		// (c) if it belongs to a task group bound to a single host - it's not blocked by a task within the task group that has finished, but did not succeed.
 		// (d) it never previously ran on another host.
 		// (e) all of its dependencies are satisfied.
-		if nextTaskQueueItem.IsDispatched == true {
+		if nextTaskQueueItem.IsDispatched {
 			continue
 		}
 

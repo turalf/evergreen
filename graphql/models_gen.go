@@ -38,11 +38,18 @@ type BuildBaron struct {
 	BuildBaronConfigured bool                         `json:"buildBaronConfigured"`
 }
 
+type BuildVariantOptions struct {
+	Variants []string `json:"variants"`
+	Tasks    []string `json:"tasks"`
+	Statuses []string `json:"statuses"`
+}
+
 type Dependency struct {
 	Name           string         `json:"name"`
 	MetStatus      MetStatus      `json:"metStatus"`
 	RequiredStatus RequiredStatus `json:"requiredStatus"`
 	BuildVariant   string         `json:"buildVariant"`
+	TaskID         string         `json:"taskId"`
 	UILink         string         `json:"uiLink"`
 }
 
@@ -52,15 +59,23 @@ type DisplayTask struct {
 }
 
 type EditSpawnHostInput struct {
-	HostID              string      `json:"hostId"`
-	DisplayName         *string     `json:"displayName"`
-	Expiration          *time.Time  `json:"expiration"`
-	NoExpiration        *bool       `json:"noExpiration"`
-	InstanceType        *string     `json:"instanceType"`
-	AddedInstanceTags   []*host.Tag `json:"addedInstanceTags"`
-	DeletedInstanceTags []*host.Tag `json:"deletedInstanceTags"`
-	Volume              *string     `json:"volume"`
-	ServicePassword     *string     `json:"servicePassword"`
+	HostID              string          `json:"hostId"`
+	DisplayName         *string         `json:"displayName"`
+	Expiration          *time.Time      `json:"expiration"`
+	NoExpiration        *bool           `json:"noExpiration"`
+	InstanceType        *string         `json:"instanceType"`
+	AddedInstanceTags   []*host.Tag     `json:"addedInstanceTags"`
+	DeletedInstanceTags []*host.Tag     `json:"deletedInstanceTags"`
+	Volume              *string         `json:"volume"`
+	ServicePassword     *string         `json:"servicePassword"`
+	PublicKey           *PublicKeyInput `json:"publicKey"`
+	SavePublicKey       *bool           `json:"savePublicKey"`
+}
+
+type GroupedBuildVariant struct {
+	Variant     string           `json:"variant"`
+	DisplayName string           `json:"displayName"`
+	Tasks       []*model.APITask `json:"tasks"`
 }
 
 type GroupedFiles struct {
@@ -84,25 +99,38 @@ type HostsResponse struct {
 	Hosts              []*model.APIHost `json:"hosts"`
 }
 
-type PatchBuildVariant struct {
-	Variant     string           `json:"variant"`
-	DisplayName string           `json:"displayName"`
-	Tasks       []*model.APITask `json:"tasks"`
+type MainlineCommitVersion struct {
+	Version          *model.APIVersion   `json:"version"`
+	RolledUpVersions []*model.APIVersion `json:"rolledUpVersions"`
 }
 
-type PatchBuildVariantTask struct {
-	ID          string  `json:"id"`
-	Execution   int     `json:"execution"`
-	DisplayName string  `json:"displayName"`
-	Name        string  `json:"name"`
-	Status      string  `json:"status"`
-	BaseStatus  *string `json:"baseStatus"`
+type MainlineCommits struct {
+	NextPageOrderNumber *int                     `json:"nextPageOrderNumber"`
+	PrevPageOrderNumber *int                     `json:"prevPageOrderNumber"`
+	Versions            []*MainlineCommitVersion `json:"versions"`
+}
+
+type MainlineCommitsOptions struct {
+	ProjectID       string `json:"projectID"`
+	Limit           *int   `json:"limit"`
+	SkipOrderNumber *int   `json:"skipOrderNumber"`
+}
+
+type Manifest struct {
+	ID              string                 `json:"id"`
+	Revision        string                 `json:"revision"`
+	Project         string                 `json:"project"`
+	Branch          string                 `json:"branch"`
+	IsBase          bool                   `json:"isBase"`
+	ModuleOverrides map[string]string      `json:"moduleOverrides"`
+	Modules         map[string]interface{} `json:"modules"`
 }
 
 type PatchConfigure struct {
-	Description   string                `json:"description"`
-	VariantsTasks []*VariantTasks       `json:"variantsTasks"`
-	Parameters    []*model.APIParameter `json:"parameters"`
+	Description         string                `json:"description"`
+	VariantsTasks       []*VariantTasks       `json:"variantsTasks"`
+	Parameters          []*model.APIParameter `json:"parameters"`
+	PatchTriggerAliases []string              `json:"patchTriggerAliases"`
 }
 
 type PatchDuration struct {
@@ -118,7 +146,6 @@ type PatchMetadata struct {
 
 type PatchProject struct {
 	Variants []*ProjectBuildVariant `json:"variants"`
-	Tasks    []string               `json:"tasks"`
 }
 
 type PatchTasks struct {
@@ -156,13 +183,6 @@ type PublicKeyInput struct {
 	Key  string `json:"key"`
 }
 
-type RecentTaskLogs struct {
-	EventLogs  []*model.TaskAPIEventLogEntry `json:"eventLogs"`
-	TaskLogs   []*apimodels.LogMessage       `json:"taskLogs"`
-	SystemLogs []*apimodels.LogMessage       `json:"systemLogs"`
-	AgentLogs  []*apimodels.LogMessage       `json:"agentLogs"`
-}
-
 type SortOrder struct {
 	Key       TaskSortCategory `json:"Key"`
 	Direction SortDirection    `json:"Direction"`
@@ -196,9 +216,29 @@ type SpawnVolumeInput struct {
 	Host             *string    `json:"host"`
 }
 
+type Subscriber struct {
+	GithubPRSubscriber    *model.APIGithubPRSubscriber    `json:"githubPRSubscriber"`
+	GithubCheckSubscriber *model.APIGithubCheckSubscriber `json:"githubCheckSubscriber"`
+	WebhookSubscriber     *model.APIWebhookSubscriber     `json:"webhookSubscriber"`
+	JiraIssueSubscriber   *model.APIJIRAIssueSubscriber   `json:"jiraIssueSubscriber"`
+	JiraCommentSubscriber *string                         `json:"jiraCommentSubscriber"`
+	EmailSubscriber       *string                         `json:"emailSubscriber"`
+	SlackSubscriber       *string                         `json:"slackSubscriber"`
+}
+
 type TaskFiles struct {
 	FileCount    int             `json:"fileCount"`
 	GroupedFiles []*GroupedFiles `json:"groupedFiles"`
+}
+
+type TaskLogs struct {
+	TaskID        string                        `json:"taskId"`
+	Execution     int                           `json:"execution"`
+	DefaultLogger string                        `json:"defaultLogger"`
+	EventLogs     []*model.TaskAPIEventLogEntry `json:"eventLogs"`
+	TaskLogs      []*apimodels.LogMessage       `json:"taskLogs"`
+	SystemLogs    []*apimodels.LogMessage       `json:"systemLogs"`
+	AgentLogs     []*apimodels.LogMessage       `json:"agentLogs"`
 }
 
 type TaskQueueDistro struct {
@@ -250,6 +290,11 @@ type VariantTasks struct {
 	Variant      string         `json:"variant"`
 	Tasks        []string       `json:"tasks"`
 	DisplayTasks []*DisplayTask `json:"displayTasks"`
+}
+
+type VersionTiming struct {
+	Makespan  *model.APIDuration `json:"makespan"`
+	TimeTaken *model.APIDuration `json:"timeTaken"`
 }
 
 type VolumeHost struct {
@@ -571,6 +616,7 @@ type TestSortCategory string
 const (
 	TestSortCategoryBaseStatus TestSortCategory = "BASE_STATUS"
 	TestSortCategoryStatus     TestSortCategory = "STATUS"
+	TestSortCategoryStartTime  TestSortCategory = "START_TIME"
 	TestSortCategoryDuration   TestSortCategory = "DURATION"
 	TestSortCategoryTestName   TestSortCategory = "TEST_NAME"
 )
@@ -578,13 +624,14 @@ const (
 var AllTestSortCategory = []TestSortCategory{
 	TestSortCategoryBaseStatus,
 	TestSortCategoryStatus,
+	TestSortCategoryStartTime,
 	TestSortCategoryDuration,
 	TestSortCategoryTestName,
 }
 
 func (e TestSortCategory) IsValid() bool {
 	switch e {
-	case TestSortCategoryBaseStatus, TestSortCategoryStatus, TestSortCategoryDuration, TestSortCategoryTestName:
+	case TestSortCategoryBaseStatus, TestSortCategoryStatus, TestSortCategoryStartTime, TestSortCategoryDuration, TestSortCategoryTestName:
 		return true
 	}
 	return false

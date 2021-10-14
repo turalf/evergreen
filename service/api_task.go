@@ -194,7 +194,7 @@ func (as *APIServer) EndTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	projectRef, err := model.FindOneProjectRef(t.Project)
+	projectRef, err := model.FindMergedProjectRef(t.Project)
 	if err != nil {
 		as.LoggedError(w, r, http.StatusInternalServerError, err)
 	}
@@ -223,8 +223,14 @@ func (as *APIServer) EndTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// mark task as finished
-	updates := model.StatusChanges{}
-	err = model.MarkEnd(t, APIServerLockTitle, finishTime, details, projectRef.ShouldDeactivatePrevious(), &updates)
+	err = projectRef.MergeWithParserProject(t.Version)
+	if err != nil {
+		err = errors.Wrapf(err, "Unable to merge parser project with project ref %s", t.Project)
+		as.LoggedError(w, r, http.StatusInternalServerError, err)
+		return
+	}
+	deactivatePrevious := utility.FromBoolPtr(projectRef.DeactivatePrevious)
+	err = model.MarkEnd(t, APIServerLockTitle, finishTime, details, deactivatePrevious)
 	if err != nil {
 		err = errors.Wrapf(err, "Error calling mark finish on task %v", t.Id)
 		as.LoggedError(w, r, http.StatusInternalServerError, err)
@@ -252,6 +258,12 @@ func (as *APIServer) EndTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// GetDisplayTask will set the DisplayTask on t if applicable
+	// we set this before the collect task end job is run to prevent data race
+	dt, err := t.GetDisplayTask()
+	if err != nil {
+		as.LoggedError(w, r, http.StatusInternalServerError, err)
+	}
 	job := units.NewCollectTaskEndDataJob(t, currentHost)
 	if err = as.queue.Put(r.Context(), job); err != nil {
 		as.LoggedError(w, r, http.StatusInternalServerError,
@@ -311,14 +323,20 @@ func (as *APIServer) EndTask(w http.ResponseWriter, r *http.Request) {
 		endTaskResp.ShouldExit = true
 	}
 
-	grip.Info(message.Fields{
+	msg := message.Fields{
 		"message":     "Successfully marked task as finished",
 		"task_id":     t.Id,
 		"execution":   t.Execution,
 		"operation":   "mark end",
 		"duration":    time.Since(finishTime),
 		"should_exit": endTaskResp.ShouldExit,
-	})
+	}
+
+	if dt != nil {
+		msg["display_task_id"] = t.DisplayTask.Id
+	}
+
+	grip.Info(msg)
 	gimlet.WriteJSON(w, endTaskResp)
 }
 
@@ -418,23 +436,21 @@ func assignNextAvailableTask(ctx context.Context, taskQueue *model.TaskQueue, di
 				return nil, false, errors.Wrap(err, "problem getting next task")
 			}
 		default:
-			queueItem = taskQueue.FindNextTask(spec)
+			queueItem, _ = taskQueue.FindNextTask(spec)
 		}
-		grip.DebugWhen(currentHost.Distro.Id == distroToMonitor || time.Now().Sub(stepStart).Seconds() > 1, message.Fields{
-			"message":            "assignNextAvailableTask performance",
-			"step":               "RefreshFindNextTask",
-			"duration_ns":        time.Now().Sub(stepStart),
-			"duration_secs":      time.Now().Sub(stepStart).Seconds(),
-			"run_id":             runId,
-			"distro":             currentHost.Distro.Id,
-			"dispatcher_version": d.DispatcherSettings.Version,
+
+		grip.DebugWhen(currentHost.Distro.Id == distroToMonitor, message.Fields{
+			"message":     "assignNextAvailableTask performance",
+			"step":        "RefreshFindNextTask",
+			"duration_ns": time.Now().Sub(stepStart),
+			"run_id":      runId,
 		})
 		stepStart = time.Now()
 		if queueItem == nil {
 			return nil, false, nil
 		}
 
-		nextTask, err := task.FindOneNoMerge(task.ById(queueItem.Id))
+		nextTask, err := task.FindOne(task.ById(queueItem.Id))
 		if err != nil {
 			grip.DebugWhen(queueItem.Group != "", message.Fields{
 				"message":            "error retrieving next task",
@@ -486,17 +502,22 @@ func assignNextAvailableTask(ctx context.Context, taskQueue *model.TaskQueue, di
 		}
 
 		projectRef, err := model.FindMergedProjectRef(nextTask.Project)
+		errMsg := message.Fields{
+			"task_id":            nextTask.Id,
+			"message":            "could not find project ref for next task, skipping",
+			"project":            nextTask.Project,
+			"host_id":            currentHost.Id,
+			"task_group":         nextTask.TaskGroup,
+			"task_build_variant": nextTask.BuildVariant,
+			"task_version":       nextTask.Version,
+		}
 		if err != nil {
-			grip.Alert(message.Fields{
-				"task_id":            nextTask.Id,
-				"message":            "could not find project ref for next task, skipping",
-				"project":            nextTask.Project,
-				"host_id":            currentHost.Id,
-				"task_group":         nextTask.TaskGroup,
-				"task_build_variant": nextTask.BuildVariant,
-				"task_version":       nextTask.Version,
-			})
-			return nil, false, errors.Wrapf(err, "could not find project ref for next task %s", nextTask.Id)
+			grip.Alert(message.WrapError(err, errMsg))
+			return nil, false, errors.Wrapf(err, "could not find project ref for next task '%s'", nextTask.Id)
+		}
+		if projectRef == nil {
+			grip.Alert(errMsg)
+			return nil, false, errors.Errorf("project ref for next task '%s' doesn't exist", nextTask.Id)
 		}
 		grip.DebugWhen(currentHost.Distro.Id == distroToMonitor, message.Fields{
 			"message":     "assignNextAvailableTask performance",
@@ -519,6 +540,7 @@ func assignNextAvailableTask(ctx context.Context, taskQueue *model.TaskQueue, di
 				"task_id":              nextTask.Id,
 				"host_id":              currentHost.Id,
 				"project":              projectRef.Id,
+				"project_identifier":   projectRef.Identifier,
 				"enabled":              projectRef.Enabled,
 				"dispatching_disabled": projectRef.DispatchingDisabled,
 			}))
@@ -593,7 +615,7 @@ func assignNextAvailableTask(ctx context.Context, taskQueue *model.TaskQueue, di
 				if minTaskGroupOrderNum != 0 && minTaskGroupOrderNum < nextTask.TaskGroupOrder {
 					dispatchRace = fmt.Sprintf("current task is order %d but another host is running %d", nextTask.TaskGroupOrder, minTaskGroupOrderNum)
 				} else if nextTask.TaskGroupOrder > 1 {
-					// if the previous task in the group has yet to run and should run, then wait for it
+					// If the previous task in the group has yet to run and should run, then wait for it.
 					tgTasks, err := task.FindTaskGroupFromBuild(nextTask.BuildId, nextTask.TaskGroup)
 					if err != nil {
 						return nil, false, errors.WithStack(err)
@@ -602,7 +624,7 @@ func assignNextAvailableTask(ctx context.Context, taskQueue *model.TaskQueue, di
 						if tgTask.TaskGroupOrder == nextTask.TaskGroupOrder {
 							break
 						}
-						if tgTask.TaskGroupOrder < nextTask.TaskGroupOrder && tgTask.IsDispatchable() {
+						if tgTask.TaskGroupOrder < nextTask.TaskGroupOrder && tgTask.IsDispatchable() && !tgTask.Blocked() {
 							dispatchRace = fmt.Sprintf("an earlier task ('%s') in the task group is still dispatchable", tgTask.DisplayName)
 						}
 					}
@@ -742,7 +764,7 @@ func (as *APIServer) NextTask(w http.ResponseWriter, r *http.Request) {
 	}))
 
 	stoppedAgentMonitor := (h.Distro.LegacyBootstrap() && h.NeedsReprovision == host.ReprovisionToLegacy ||
-		h.NeedsReprovision == host.ReprovisionJasperRestart)
+		h.NeedsReprovision == host.ReprovisionRestartJasper)
 	defer func() {
 		grip.DebugWhen(time.Since(begin) > time.Second, message.Fields{
 			"message":               "slow next_task operation",
@@ -1034,7 +1056,7 @@ func handleOldAgentRevision(response apimodels.NextTaskResponse, details *apimod
 func sendBackRunningTask(h *host.Host, response apimodels.NextTaskResponse, w http.ResponseWriter) {
 	var err error
 	var t *task.Task
-	t, err = task.FindOne(task.ById(h.RunningTask))
+	t, err = task.FindOneId(h.RunningTask)
 	if err != nil {
 		err = errors.Wrapf(err, "error getting running task %s", h.RunningTask)
 		grip.Error(err)

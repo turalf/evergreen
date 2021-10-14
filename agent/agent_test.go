@@ -261,7 +261,8 @@ pre:
       script: "echo hi"
 `
 	p := &model.Project{}
-	_, err := model.LoadProjectInto([]byte(projYml), "", p)
+	ctx := context.Background()
+	_, err := model.LoadProjectInto(ctx, []byte(projYml), nil, "", p)
 	s.NoError(err)
 	s.tc.taskConfig = &internal.TaskConfig{
 		BuildVariant: &model.BuildVariant{
@@ -293,7 +294,8 @@ pre:
       command: "doesntexist"
 `
 	p := &model.Project{}
-	_, err := model.LoadProjectInto([]byte(projYml), "", p)
+	ctx := context.Background()
+	_, err := model.LoadProjectInto(ctx, []byte(projYml), nil, "", p)
 	s.NoError(err)
 	s.tc.taskConfig = &internal.TaskConfig{
 		BuildVariant: &model.BuildVariant{
@@ -312,15 +314,17 @@ pre:
 	s.NoError(s.tc.logger.Close())
 }
 
-func (s *AgentSuite) TestPost() {
+func (s *AgentSuite) TestPostFailsTask() {
 	projYml := `
+post_error_fails_task: true
 post:
-  - command: shell.exec
+  - command: subprocess.exec
     params:
-      script: "echo hi"
+      command: "doesntexist"
 `
 	p := &model.Project{}
-	_, err := model.LoadProjectInto([]byte(projYml), "", p)
+	ctx := context.Background()
+	_, err := model.LoadProjectInto(ctx, []byte(projYml), nil, "", p)
 	s.NoError(err)
 	s.tc.taskConfig = &internal.TaskConfig{
 		BuildVariant: &model.BuildVariant{
@@ -335,7 +339,35 @@ post:
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s.a.runPostTaskCommands(ctx, s.tc)
+	s.Error(s.a.runPostTaskCommands(ctx, s.tc))
+	s.NoError(s.tc.logger.Close())
+}
+
+func (s *AgentSuite) TestPost() {
+	projYml := `
+post:
+  - command: shell.exec
+    params:
+      script: "echo hi"
+`
+	p := &model.Project{}
+	ctx := context.Background()
+	_, err := model.LoadProjectInto(ctx, []byte(projYml), nil, "", p)
+	s.NoError(err)
+	s.tc.taskConfig = &internal.TaskConfig{
+		BuildVariant: &model.BuildVariant{
+			Name: "buildvariant_id",
+		},
+		Task: &task.Task{
+			Id:      "task_id",
+			Version: versionId,
+		},
+		Project: p,
+		WorkDir: s.tc.taskDirectory,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.NoError(s.a.runPostTaskCommands(ctx, s.tc))
 	_ = s.tc.logger.Close()
 	msgs := s.mockCommunicator.GetMockMessages()["task_id"]
 	s.Equal("Running post-task commands.", msgs[1].Message)
@@ -354,7 +386,8 @@ post:
       script: "exit 0"
 `
 	p := &model.Project{}
-	_, err := model.LoadProjectInto([]byte(projYml), "", p)
+	ctx := context.Background()
+	_, err := model.LoadProjectInto(ctx, []byte(projYml), nil, "", p)
 	s.NoError(err)
 	s.tc.taskConfig = &internal.TaskConfig{
 		BuildVariant: &model.BuildVariant{
@@ -369,7 +402,7 @@ post:
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s.a.runPostTaskCommands(ctx, s.tc)
+	s.NoError(s.a.runPostTaskCommands(ctx, s.tc))
 	_ = s.tc.logger.Close()
 	msgs := s.mockCommunicator.GetMockMessages()["task_id"]
 	s.Equal("Running post-task commands.", msgs[1].Message)
@@ -640,16 +673,6 @@ func (s *AgentSuite) TestPrepareNextTask() {
 	s.Empty(tc.taskDirectory)
 }
 
-func (s *AgentSuite) TestAgentConstructorSetsHostData() {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	agent, err := newWithCommunicator(ctx, Options{HostID: "host_id", HostSecret: "host_secret"}, client.NewMock("url"))
-	s.Require().NoError(err)
-	s.Equal("host_id", agent.comm.GetHostID())
-	s.Equal("host_secret", agent.comm.GetHostSecret())
-}
-
 func (s *AgentSuite) TestGroupPreGroupCommands() {
 	s.tc.taskGroup = "task_group_name"
 	s.tc.taskGroup = "task_group_name"
@@ -662,7 +685,8 @@ task_groups:
       script: "echo hi"
 `
 	p := &model.Project{}
-	_, err := model.LoadProjectInto([]byte(projYml), "", p)
+	ctx := context.Background()
+	_, err := model.LoadProjectInto(ctx, []byte(projYml), nil, "", p)
 	s.NoError(err)
 	s.tc.taskConfig = &internal.TaskConfig{
 		BuildVariant: &model.BuildVariant{
@@ -699,7 +723,8 @@ task_groups:
       script: "sleep 10"
 `
 	p := &model.Project{}
-	_, err := model.LoadProjectInto([]byte(projYml), "", p)
+	ctx := context.Background()
+	_, err := model.LoadProjectInto(ctx, []byte(projYml), nil, "", p)
 	s.NoError(err)
 	s.tc.taskConfig = &internal.TaskConfig{
 		BuildVariant: &model.BuildVariant{
@@ -733,7 +758,8 @@ task_groups:
       script: "echo hi"
 `
 	p := &model.Project{}
-	_, err := model.LoadProjectInto([]byte(projYml), "", p)
+	ctx := context.Background()
+	_, err := model.LoadProjectInto(ctx, []byte(projYml), nil, "", p)
 	s.NoError(err)
 	s.tc.taskConfig = &internal.TaskConfig{
 		BuildVariant: &model.BuildVariant{
@@ -755,6 +781,41 @@ task_groups:
 	s.Contains(msgs[len(msgs)-1].Message, "error running task setup group")
 }
 
+func (s *AgentSuite) TestGroupPostGroupCommandsFail() {
+	s.tc.taskGroup = "task_group_name"
+	projYml := `
+task_groups:
+- name: task_group_name
+  teardown_task_can_fail_task: true
+  teardown_task:
+  - command: thisisnotarealcommand
+    params:
+      script: "echo hi"
+`
+	p := &model.Project{}
+	ctx := context.Background()
+	_, err := model.LoadProjectInto(ctx, []byte(projYml), nil, "", p)
+	s.NoError(err)
+	s.tc.taskConfig = &internal.TaskConfig{
+		BuildVariant: &model.BuildVariant{
+			Name: "buildvariant_id",
+		},
+		Task: &task.Task{
+			Id:        "task_id",
+			TaskGroup: "task_group_name",
+			Version:   versionId,
+		},
+		Project: p,
+		WorkDir: s.tc.taskDirectory,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.Error(s.a.runPostTaskCommands(ctx, s.tc))
+	s.NoError(s.tc.logger.Close())
+	msgs := s.mockCommunicator.GetMockMessages()["task_id"]
+	s.Contains(msgs[len(msgs)-1].Message, "Error running post-task command.")
+}
+
 func (s *AgentSuite) TestGroupPreTaskCommands() {
 	s.tc.taskGroup = "task_group_name"
 	projYml := `
@@ -766,7 +827,8 @@ task_groups:
       script: "echo hi"
 `
 	p := &model.Project{}
-	_, err := model.LoadProjectInto([]byte(projYml), "", p)
+	ctx := context.Background()
+	_, err := model.LoadProjectInto(ctx, []byte(projYml), nil, "", p)
 	s.NoError(err)
 	s.tc.taskConfig = &internal.TaskConfig{
 		BuildVariant: &model.BuildVariant{
@@ -801,7 +863,8 @@ task_groups:
       script: "echo hi"
 `
 	p := &model.Project{}
-	_, err := model.LoadProjectInto([]byte(projYml), "", p)
+	ctx := context.Background()
+	_, err := model.LoadProjectInto(ctx, []byte(projYml), nil, "", p)
 	s.NoError(err)
 	s.tc.taskConfig = &internal.TaskConfig{
 		BuildVariant: &model.BuildVariant{
@@ -817,7 +880,7 @@ task_groups:
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s.a.runPostTaskCommands(ctx, s.tc)
+	s.NoError(s.a.runPostTaskCommands(ctx, s.tc))
 	_ = s.tc.logger.Close()
 	msgs := s.mockCommunicator.GetMockMessages()["task_id"]
 	s.Equal("Running command 'shell.exec' (step 1 of 1)", msgs[2].Message)
@@ -837,7 +900,8 @@ task_groups:
       script: "echo hi"
 `
 	p := &model.Project{}
-	_, err := model.LoadProjectInto([]byte(projYml), "", p)
+	ctx := context.Background()
+	_, err := model.LoadProjectInto(ctx, []byte(projYml), nil, "", p)
 	s.NoError(err)
 	s.tc.taskConfig = &internal.TaskConfig{
 		BuildVariant: &model.BuildVariant{
@@ -875,7 +939,8 @@ task_groups:
       script: "echo hi"
 `
 	p := &model.Project{}
-	_, err := model.LoadProjectInto([]byte(projYml), "", p)
+	ctx := context.Background()
+	_, err := model.LoadProjectInto(ctx, []byte(projYml), nil, "", p)
 	s.NoError(err)
 	s.tc.taskConfig = &internal.TaskConfig{
 		BuildVariant: &model.BuildVariant{
@@ -915,7 +980,8 @@ timeout:
       echo "bye"
 `
 	p := &model.Project{}
-	_, err := model.LoadProjectInto([]byte(projYml), "", p)
+	ctx := context.Background()
+	_, err := model.LoadProjectInto(ctx, []byte(projYml), nil, "", p)
 	s.NoError(err)
 	p.CallbackTimeout = 2
 	s.tc.taskConfig = &internal.TaskConfig{

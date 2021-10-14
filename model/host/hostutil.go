@@ -20,6 +20,7 @@ import (
 	"github.com/evergreen-ci/evergreen/model/distro"
 	"github.com/evergreen-ci/evergreen/model/user"
 	"github.com/evergreen-ci/evergreen/util"
+	"github.com/evergreen-ci/utility"
 	"github.com/mongodb/grip"
 	"github.com/mongodb/grip/message"
 	"github.com/mongodb/grip/send"
@@ -29,7 +30,7 @@ import (
 	"github.com/mongodb/jasper/remote"
 	"github.com/pkg/errors"
 	"go.mongodb.org/mongo-driver/bson"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 const OutputBufferSize = 1000
@@ -92,19 +93,15 @@ func (h *Host) CurlCommandWithDefaultRetry(settings *evergreen.Settings) (string
 }
 
 func (h *Host) curlCommands(settings *evergreen.Settings, curlArgs string) ([]string, error) {
-	flags, err := evergreen.GetServiceFlags()
-	if err != nil {
-		return nil, errors.Wrap(err, "getting service flags")
-	}
 	var curlCmd string
-	if !flags.S3BinaryDownloadsDisabled && settings.HostInit.S3BaseURL != "" {
+	if !settings.ServiceFlags.S3BinaryDownloadsDisabled && settings.HostInit.S3BaseURL != "" {
 		// Attempt to download the agent from S3, but fall back to downloading from
 		// the app server if it fails.
 		// Include -f to return an error code from curl if the HTTP request
 		// fails (e.g. it receives 403 Forbidden or 404 Not Found).
-		curlCmd = fmt.Sprintf("(curl -fLO '%s'%s || curl -LO '%s'%s)", h.Distro.S3ClientURL(settings), curlArgs, h.Distro.ClientURL(settings), curlArgs)
+		curlCmd = fmt.Sprintf("(curl -fLO %s%s || curl -fLO %s%s)", h.Distro.S3ClientURL(settings), curlArgs, h.Distro.ClientURL(settings), curlArgs)
 	} else {
-		curlCmd += fmt.Sprintf("curl -LO '%s'%s", h.Distro.ClientURL(settings), curlArgs)
+		curlCmd += fmt.Sprintf("curl -fLO %s%s", h.Distro.ClientURL(settings), curlArgs)
 	}
 	return []string{
 		fmt.Sprintf("cd %s", h.Distro.HomeDir()),
@@ -316,6 +313,9 @@ func (h *Host) ForceReinstallJasperCommand(settings *evergreen.Settings) string 
 		if numFiles := h.Distro.BootstrapSettings.ResourceLimits.NumFiles; numFiles != 0 {
 			params = append(params, fmt.Sprintf("--limit_num_files=%d", numFiles))
 		}
+		if numTasks := h.Distro.BootstrapSettings.ResourceLimits.NumTasks; numTasks != 0 {
+			params = append(params, fmt.Sprintf("--limit_num_tasks=%d", numTasks))
+		}
 		if lockedMem := h.Distro.BootstrapSettings.ResourceLimits.LockedMemoryKB; lockedMem != 0 {
 			params = append(params, fmt.Sprintf("--limit_locked_memory=%d", lockedMem))
 		}
@@ -366,7 +366,7 @@ func (h *Host) fetchJasperCommands(config evergreen.HostJasperConfig) []string {
 	extractedFile := h.jasperBinaryFileName(config)
 	return []string{
 		fmt.Sprintf("cd %s", h.Distro.BootstrapSettings.JasperBinaryDir),
-		fmt.Sprintf("curl -LO '%s/%s' %s", config.URL, downloadedFile, curlRetryArgs(curlDefaultNumRetries, curlDefaultMaxSecs)),
+		fmt.Sprintf("curl -fLO %s/%s %s", config.URL, downloadedFile, curlRetryArgs(curlDefaultNumRetries, curlDefaultMaxSecs)),
 		fmt.Sprintf("tar xzf '%s'", downloadedFile),
 		fmt.Sprintf("chmod +x '%s'", extractedFile),
 		fmt.Sprintf("rm -f '%s'", downloadedFile),
@@ -921,6 +921,12 @@ func (h *Host) CheckTaskDataFetched(ctx context.Context, env evergreen.Environme
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 
+	const (
+		checkAttempts      = 10
+		checkRetryMinDelay = time.Second
+		checkRetryMaxDelay = 45 * time.Second
+	)
+
 	return h.withTaggedProcs(ctx, env, evergreen.HostFetchTag, func(procs []jasper.Process) error {
 		grip.WarningWhen(len(procs) > 1, message.Fields{
 			"message":   "host is attempting to fetch task data multiple times",
@@ -930,14 +936,18 @@ func (h *Host) CheckTaskDataFetched(ctx context.Context, env evergreen.Environme
 		})
 		catcher := grip.NewBasicCatcher()
 		for _, proc := range procs {
-			err := util.Retry(
+			err := utility.Retry(
 				ctx,
 				func() (bool, error) {
 					if proc.Complete(ctx) {
 						return false, nil
 					}
 					return true, errors.New("fetching task data not finished")
-				}, 10, time.Second, 45*time.Second)
+				}, utility.RetryOptions{
+					MaxAttempts: checkAttempts,
+					MinDelay:    checkRetryMinDelay,
+					MaxDelay:    checkRetryMaxDelay,
+				})
 			// If we see a process that's completed then we can suppress errors from erroneous duplicates.
 			if err == nil {
 				return nil
@@ -990,6 +1000,7 @@ func (h *Host) AgentCommand(settings *evergreen.Settings, executablePath string)
 		executablePath,
 		"agent",
 		fmt.Sprintf("--api_server=%s", settings.ApiUrl),
+		fmt.Sprintf("--mode=host"),
 		fmt.Sprintf("--host_id=%s", h.Id),
 		fmt.Sprintf("--host_secret=%s", h.Secret),
 		fmt.Sprintf("--provider=%s", h.Distro.Provider),
@@ -1020,6 +1031,14 @@ func (h *Host) AgentMonitorOptions(settings *evergreen.Settings) *options.Create
 		Args: args,
 		Tags: []string{evergreen.AgentMonitorTag},
 	}
+}
+
+func (h *Host) AddPubKey(ctx context.Context, pubKey string) error {
+	if logs, err := h.RunSSHCommand(ctx, fmt.Sprintf("grep -qxF \"%s\" ~/.ssh/authorized_keys || echo \"%s\" >> ~/.ssh/authorized_keys", pubKey, pubKey)); err != nil {
+		return errors.Wrapf(err, "could not run SSH command to add to authorized keys on '%s'. Logs: '%s'", h.Id, logs)
+	}
+
+	return nil
 }
 
 // SpawnHostSetupCommands returns the commands to handle setting up a spawn

@@ -38,10 +38,16 @@ type Agent struct {
 	defaultLogger send.Sender
 }
 
-// Options contains startup options for the Agent.
+// Options contains startup options for an Agent.
 type Options struct {
-	HostID                string
-	HostSecret            string
+	// Mode determines which mode the agent will run in.
+	Mode Mode
+	// HostID and HostSecret only apply in host mode.
+	HostID     string
+	HostSecret string
+	// PodID and PodSecret only apply in pod mode.
+	PodID                 string
+	PodSecret             string
 	StatusPort            int
 	LogPrefix             string
 	LogkeeperURL          string
@@ -54,6 +60,16 @@ type Options struct {
 	SetupData             apimodels.AgentSetupData
 	CloudProvider         string
 }
+
+// Mode represents a mode that the agent will run in.
+type Mode string
+
+const (
+	// HostMode indicates that the agent will run in a host.
+	HostMode Mode = "host"
+	// PodMode indicates that the agent will run in a pod's container.
+	PodMode Mode = "pod"
+)
 
 type taskContext struct {
 	currentCommand         command.Command
@@ -98,14 +114,19 @@ const (
 // Agent's Start method to begin listening for tasks to run. Users should call
 // Close when the agent is finished.
 func New(ctx context.Context, opts Options, serverURL string) (*Agent, error) {
-	comm := client.NewCommunicator(serverURL)
+	var comm client.Communicator
+	switch opts.Mode {
+	case HostMode:
+		comm = client.NewHostCommunicator(serverURL, opts.HostID, opts.HostSecret)
+	case PodMode:
+		comm = client.NewPodCommunicator(serverURL, opts.PodID, opts.PodSecret)
+	default:
+		return nil, errors.Errorf("unrecognized agent mode '%s'", opts.Mode)
+	}
 	return newWithCommunicator(ctx, opts, comm)
 }
 
 func newWithCommunicator(ctx context.Context, opts Options, comm client.Communicator) (*Agent, error) {
-	comm.SetHostID(opts.HostID)
-	comm.SetHostSecret(opts.HostSecret)
-
 	jpm, err := jasper.NewSynchronizedManager(false)
 	if err != nil {
 		comm.Close()
@@ -186,6 +207,21 @@ LOOP:
 			grip.Info("agent loop canceled")
 			return nil
 		case <-timer.C:
+			// Check the cedar GRPC connection so we can fail early
+			// and avoid task system failures.
+			err := utility.Retry(ctx, func() (bool, error) {
+				_, err := a.comm.GetCedarGRPCConn(ctx)
+				return true, err
+			}, utility.RetryOptions{MaxAttempts: 5, MaxDelay: minAgentSleepInterval})
+			if err != nil {
+				if ctx.Err() != nil {
+					// We don't want to return an error if
+					// the agent loop is canceled.
+					return nil
+				}
+				return errors.Wrap(err, "cannot connect to cedar")
+			}
+
 			nextTask, err := a.comm.GetNextTask(ctx, &apimodels.GetNextTaskDetails{
 				TaskGroup:     tc.taskGroup,
 				AgentRevision: evergreen.AgentVersion,
@@ -515,11 +551,16 @@ func (a *Agent) finishTask(ctx context.Context, tc *taskContext, status string, 
 	switch detail.Status {
 	case evergreen.TaskSucceeded:
 		tc.logger.Task().Info("Task completed - SUCCESS.")
-		a.runPostTaskCommands(ctx, tc)
+		if err := a.runPostTaskCommands(ctx, tc); err != nil {
+			tc.logger.Task().Info("Post task completed -- FAILURE. Overall task status changed to FAILED.")
+			detail.Status = evergreen.TaskFailed
+		}
 		a.runEndTaskSync(ctx, tc, detail)
 	case evergreen.TaskFailed:
 		tc.logger.Task().Info("Task completed - FAILURE.")
-		a.runPostTaskCommands(ctx, tc)
+		if err := a.runPostTaskCommands(ctx, tc); err != nil {
+			tc.logger.Task().Error(errors.Wrap(err, "error running post task commands"))
+		}
 		a.runEndTaskSync(ctx, tc, detail)
 	case evergreen.TaskUndispatched:
 		tc.logger.Task().Info("Task completed - ABORTED.")
@@ -533,10 +574,12 @@ func (a *Agent) finishTask(ctx context.Context, tc *taskContext, status string, 
 		tc.logger.Task().Errorf("Programmer error: Invalid task status %s", detail.Status)
 	}
 
+	tc.Lock()
 	if tc.systemMetricsCollector != nil {
 		err := tc.systemMetricsCollector.Close()
 		tc.logger.System().Error(errors.Wrap(err, "error closing system metrics collector"))
 	}
+	tc.Unlock()
 
 	a.killProcs(ctx, tc, false)
 
@@ -565,7 +608,7 @@ func (a *Agent) endTaskResponse(tc *taskContext, status string, message string) 
 		description = tc.getCurrentCommand().DisplayName()
 		cmdType = tc.getCurrentCommand().Type()
 	}
-	return &apimodels.TaskEndDetail{
+	detail := &apimodels.TaskEndDetail{
 		Description:     description,
 		Type:            cmdType,
 		TimedOut:        tc.hadTimedOut(),
@@ -576,39 +619,54 @@ func (a *Agent) endTaskResponse(tc *taskContext, status string, message string) 
 		Message:         message,
 		Logs:            tc.logs,
 	}
+	if tc.taskConfig != nil {
+		detail.Modules.Prefixes = tc.taskConfig.ModulePaths
+	}
+	return detail
 }
 
-func (a *Agent) runPostTaskCommands(ctx context.Context, tc *taskContext) {
+func (a *Agent) runPostTaskCommands(ctx context.Context, tc *taskContext) error {
 	start := time.Now()
 	a.killProcs(ctx, tc, false)
 	defer a.killProcs(ctx, tc, false)
 	tc.logger.Task().Info("Running post-task commands.")
+	opts := runCommandsOptions{}
 	postCtx, cancel := a.withCallbackTimeout(ctx, tc)
 	defer cancel()
 	taskConfig := tc.getTaskConfig()
 	taskGroup, err := taskConfig.GetTaskGroup(tc.taskGroup)
 	if err != nil {
 		tc.logger.Execution().Error(errors.Wrap(err, "error fetching task group for post-task commands"))
-		return
+		return nil
 	}
 	if taskGroup.TeardownTask != nil {
-		err = a.runCommands(postCtx, tc, taskGroup.TeardownTask.List(), runCommandsOptions{})
-		tc.logger.Task().Error(message.WrapError(err, message.Fields{
-			"message": "Error running post-task command.",
-		}))
+		opts.failPreAndPost = taskGroup.TeardownTaskCanFailTask
+		err = a.runCommands(postCtx, tc, taskGroup.TeardownTask.List(), opts)
+		if err != nil {
+			tc.logger.Task().Error(message.WrapError(err, message.Fields{
+				"message": "Error running post-task command.",
+			}))
+			if taskGroup.TeardownTaskCanFailTask {
+				return err
+			}
+		}
 		tc.logger.Task().InfoWhen(err == nil, message.Fields{
 			"message":    "Finished running post-task commands.",
 			"total_time": time.Since(start).String(),
 		})
 	}
+	return nil
 }
 
 func (a *Agent) runPostGroupCommands(ctx context.Context, tc *taskContext) {
 	defer a.removeTaskDirectory(tc)
-	defer a.killProcs(ctx, tc, true)
 	if tc.taskConfig == nil {
 		return
 	}
+	// Only killProcs if tc.taskConfig is not nil. This avoids passing an
+	// empty working directory to killProcs, and is okay because this
+	// killProcs is only for the processes run in runPostGroupCommands.
+	defer a.killProcs(ctx, tc, true)
 	defer func() {
 		if tc.logger != nil {
 			grip.Error(tc.logger.Close())
@@ -637,6 +695,10 @@ func (a *Agent) runPostGroupCommands(ctx context.Context, tc *taskContext) {
 
 // runEndTaskSync runs task sync if it was requested for the end of this task.
 func (a *Agent) runEndTaskSync(ctx context.Context, tc *taskContext, detail *apimodels.TaskEndDetail) {
+	if tc.taskModel == nil {
+		tc.logger.Task().Error("Task model not found for running task sync.")
+		return
+	}
 	start := time.Now()
 	taskSyncCmds := endTaskSyncCommands(tc, detail)
 	if taskSyncCmds == nil {
@@ -674,14 +736,17 @@ func (a *Agent) killProcs(ctx context.Context, tc *taskContext, ignoreTaskGroupC
 	}
 
 	if a.shouldKill(tc, ignoreTaskGroupCheck) {
-		if tc.task.ID != "" {
+		if tc.task.ID != "" && tc.taskConfig != nil {
 			logger.Infof("cleaning up processes for task: %s", tc.task.ID)
-			if err := agentutil.KillSpawnedProcs(tc.task.ID, tc.taskConfig.WorkDir, logger); err != nil {
-				msg := fmt.Sprintf("Error cleaning up spawned processes (agent-exit): %v", err)
-				logger.Critical(msg)
+			if err := agentutil.KillSpawnedProcs(ctx, tc.task.ID, tc.taskConfig.WorkDir, logger); err != nil {
+				// If the host is in a state where ps is timing out we need human intervention.
+				if psErr := errors.Cause(err); psErr == agentutil.ErrPSTimeout {
+					disableErr := a.comm.DisableHost(ctx, a.opts.HostID, apimodels.DisableInfo{Reason: psErr.Error()})
+					logger.CriticalWhen(disableErr != nil, fmt.Sprintf("error disabling host: %s", disableErr))
+				}
+				logger.Critical(fmt.Sprintf("error cleaning up spawned processes: %v", err))
 			}
-
-			logger.Infof("cleaned up processes for task: %s", tc.task.ID)
+			logger.Infof("cleaned up processes for task: '%s'", tc.task.ID)
 		}
 
 		logger.Info("cleaning up Docker artifacts")
@@ -689,8 +754,7 @@ func (a *Agent) killProcs(ctx context.Context, tc *taskContext, ignoreTaskGroupC
 		ctx, cancel = context.WithTimeout(ctx, dockerTimeout)
 		defer cancel()
 		if err := docker.Cleanup(ctx, logger); err != nil {
-			msg := fmt.Sprintf("Error cleaning up Docker artifacts (agent-exit): %s", err)
-			logger.Critical(msg)
+			logger.Critical(fmt.Sprintf("error cleaning up Docker artifacts: %s", err))
 		}
 		logger.Info("cleaned up Docker artifacts")
 	}

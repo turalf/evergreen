@@ -29,6 +29,8 @@ type TaskConfig struct {
 	GithubPatchData      thirdparty.GithubPatch
 	Timeout              *Timeout
 	TaskSync             evergreen.S3Credentials
+	ModulePaths          map[string]string
+	CedarTestResultsID   string
 
 	mu sync.RWMutex
 }
@@ -143,10 +145,11 @@ func (tc *TaskConfig) GetTaskGroup(taskGroup string) (*model.TaskGroup, error) {
 	if taskGroup == "" {
 		// if there is no named task group, fall back to project definitions
 		return &model.TaskGroup{
-			SetupTask:          tc.Project.Pre,
-			TeardownTask:       tc.Project.Post,
-			Timeout:            tc.Project.Timeout,
-			SetupGroupFailTask: tc.Project.Pre == nil || tc.Project.PreErrorFailsTask,
+			SetupTask:               tc.Project.Pre,
+			TeardownTask:            tc.Project.Post,
+			Timeout:                 tc.Project.Timeout,
+			SetupGroupFailTask:      tc.Project.Pre == nil || tc.Project.PreErrorFailsTask,
+			TeardownTaskCanFailTask: tc.Project.Post == nil || tc.Project.PostErrorFailsTask,
 		}, nil
 	}
 	tg := tc.Project.FindTaskGroup(taskGroup)

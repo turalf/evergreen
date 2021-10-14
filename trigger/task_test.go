@@ -7,11 +7,13 @@ import (
 	"time"
 
 	"github.com/evergreen-ci/evergreen"
+	"github.com/evergreen-ci/evergreen/apimodels"
 	"github.com/evergreen-ci/evergreen/db"
 	"github.com/evergreen-ci/evergreen/model"
 	"github.com/evergreen-ci/evergreen/model/alertrecord"
 	"github.com/evergreen-ci/evergreen/model/build"
 	"github.com/evergreen-ci/evergreen/model/event"
+	"github.com/evergreen-ci/evergreen/model/notification"
 	"github.com/evergreen-ci/evergreen/model/task"
 	"github.com/evergreen-ci/evergreen/model/testresult"
 	"github.com/evergreen-ci/evergreen/model/user"
@@ -276,6 +278,8 @@ func (s *taskSuite) SetupTest() {
 			Type:   event.JIRACommentSubscriberType,
 			Target: "A-3",
 		}),
+		event.NewSubscriptionByID(event.ResourceTypeTask, triggerTaskFailedOrBlocked, s.event.ResourceId, apiSub),
+		event.NewSubscriptionByID(event.ResourceTypeTask, event.TriggerTaskStarted, s.event.ResourceId, apiSub),
 	}
 
 	for i := range s.subs {
@@ -368,7 +372,7 @@ func (s *taskSuite) TestGithubPREvent() {
 func (s *taskSuite) TestAllTriggers() {
 	n, err := NotificationsFromEvent(&s.event)
 	s.NoError(err)
-	s.Len(n, 1)
+	s.Len(n, 2)
 
 	s.task.Status = evergreen.TaskSucceeded
 	s.data.Status = evergreen.TaskSucceeded
@@ -384,13 +388,13 @@ func (s *taskSuite) TestAllTriggers() {
 
 	n, err = NotificationsFromEvent(&s.event)
 	s.NoError(err)
-	s.Len(n, 4)
+	s.Len(n, 5)
 
 	s.task.DisplayOnly = true
 	s.NoError(db.Update(task.Collection, bson.M{"_id": s.task.Id}, &s.task))
 	n, err = NotificationsFromEvent(&s.event)
 	s.NoError(err)
-	s.Len(n, 3)
+	s.Len(n, 4)
 }
 
 func (s *taskSuite) TestAbortedTaskDoesNotNotify() {
@@ -411,6 +415,7 @@ func (s *taskSuite) TestAbortedTaskDoesNotNotify() {
 
 func (s *taskSuite) TestExecutionTask() {
 	t := task.Task{
+		Id:             "dt",
 		DisplayName:    "displaytask",
 		ExecutionTasks: []string{s.task.Id},
 	}
@@ -465,6 +470,27 @@ func (s *taskSuite) TestOutcome() {
 
 	s.data.Status = evergreen.TaskFailed
 	n, err = s.t.taskOutcome(&s.subs[0])
+	s.NoError(err)
+	s.NotNil(n)
+}
+
+func (s *taskSuite) TestFailedOrBlocked() {
+	s.data.Status = evergreen.TaskUndispatched
+	s.t.task.DependsOn = []task.Dependency{
+		{
+			TaskId:       "blocking",
+			Unattainable: false,
+		},
+		{TaskId: "not blocking",
+			Unattainable: false,
+		},
+	}
+	n, err := s.t.taskFailedOrBlocked(&s.subs[7])
+	s.NoError(err)
+	s.Nil(n)
+
+	s.t.task.DependsOn[0].Unattainable = true
+	n, err = s.t.taskFailedOrBlocked(&s.subs[7])
 	s.NoError(err)
 	s.NotNil(n)
 }
@@ -759,6 +785,35 @@ func (s *taskSuite) tryDoubleTrigger(shouldGenerate bool) {
 	s.Nil(n)
 }
 
+func (s *taskSuite) TestSkipStrandedJIRA() {
+	sub := event.Subscription{
+		ID:           mgobson.NewObjectId().Hex(),
+		ResourceType: event.ResourceTypeTask,
+		Trigger:      "should-miss",
+		Selectors: []event.Selector{
+			{
+				Type: event.SelectorProject,
+				Data: "myproj",
+			},
+		},
+		Subscriber: event.Subscriber{
+			Type:   event.JIRAIssueSubscriberType,
+			Target: "a@b.com",
+		},
+		TriggerData: map[string]string{
+			event.TestRegexKey: "test*",
+		},
+		Owner: "someone",
+	}
+	s.t = s.makeTaskTriggers(s.task.Id, s.task.Execution)
+	s.t.task.Details = apimodels.TaskEndDetail{
+		Description: evergreen.TaskDescriptionStranded,
+	}
+	n, err := s.t.generate(&sub, "", "")
+	s.NoError(err)
+	s.Equal(n, (*notification.Notification)(nil))
+}
+
 func (s *taskSuite) TestRegressionByTestSimpleRegression() {
 	s.NoError(db.ClearCollections(task.Collection, testresult.Collection))
 
@@ -1051,7 +1106,7 @@ func TestIsTestRegression(t *testing.T) {
 	assert.False(isTestStatusRegression(evergreen.TestSilentlyFailedStatus, evergreen.TestSucceededStatus))
 }
 
-func TestMapTestResultsByTestFile(t *testing.T) {
+func TestMapTestResultsByTestName(t *testing.T) {
 	assert := assert.New(t)
 
 	results := []task.TestResult{}
@@ -1072,13 +1127,14 @@ func TestMapTestResultsByTestFile(t *testing.T) {
 				Status:   first,
 			},
 			task.TestResult{
-				TestFile: fmt.Sprintf("file%d", i),
-				Status:   second,
+				TestFile:        utility.RandomString(),
+				DisplayTestName: fmt.Sprintf("file%d", i),
+				Status:          second,
 			},
 		)
 	}
 
-	m := mapTestResultsByTestFile(results)
+	m := mapTestResultsByTestName(results)
 	assert.Len(m, 4)
 
 	for _, v := range m {
@@ -1173,7 +1229,7 @@ func (s *taskSuite) TestProjectTrigger() {
 
 	n, err := NotificationsFromEvent(&s.event)
 	s.NoError(err)
-	s.Len(n, 1)
+	s.Len(n, 2)
 }
 
 func (s *taskSuite) TestBuildBreak() {
@@ -1296,20 +1352,20 @@ func TestTaskRegressionByTestDisplayTask(t *testing.T) {
 	tr.task = &tasks[0]
 	notification, err = tr.taskRegressionByTest(&event.Subscription{ID: "s1", Subscriber: subscriber, Trigger: "t1"})
 	assert.NoError(t, err)
-	assert.NotNil(t, notification)
+	require.NotNil(t, notification)
 	assert.Equal(t, "dt0_0", notification.Metadata.TaskID)
 
-	// don't alert on the second run of the display task for a different execution task (et1) that contains the same test (f0)
-	tr.task = &tasks[3]
-	notification, err = tr.taskRegressionByTest(&event.Subscription{ID: "s1", Subscriber: subscriber, Trigger: "t1"})
-	assert.NoError(t, err)
-	assert.Nil(t, notification)
-
 	// alert for the second run of the display task with the same execution task (et0) failing with a new test (f1)
+	tr.task = &tasks[3]
 	newResult := testresult.TestResult{TaskID: "et0_1", TestFile: "f1", Status: evergreen.TestFailedStatus}
 	assert.NoError(t, newResult.Insert())
 	notification, err = tr.taskRegressionByTest(&event.Subscription{ID: "s1", Subscriber: subscriber, Trigger: "t1"})
 	assert.NoError(t, err)
-	assert.NotNil(t, notification)
+	require.NotNil(t, notification)
 	assert.Equal(t, "dt0_1", notification.Metadata.TaskID)
+
+	// don't alert on the second run of the display task for a different execution task (et1) that contains the same test (f0)
+	notification, err = tr.taskRegressionByTest(&event.Subscription{ID: "s1", Subscriber: subscriber, Trigger: "t1"})
+	assert.NoError(t, err)
+	assert.Nil(t, notification)
 }

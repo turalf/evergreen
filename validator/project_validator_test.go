@@ -1,6 +1,7 @@
 package validator
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"testing"
@@ -1056,6 +1057,11 @@ func TestValidateBVBatchTimes(t *testing.T) {
 
 	p.BuildVariants[0].Tasks[0].BatchTime = nil
 	assert.Len(t, validateBVBatchTimes(p), 0)
+
+	// warning if activated to true with batchtime
+	p.BuildVariants[0].Activate = utility.TruePtr()
+	assert.Len(t, validateBVBatchTimes(p), 1)
+
 }
 
 func TestValidateBVsContainTasks(t *testing.T) {
@@ -1926,6 +1932,33 @@ func TestEnsureHasNecessaryBVFields(t *testing.T) {
 				ShouldEqual, 1)
 		})
 		Convey("no error should be thrown if the buildvariant does not "+
+			"have a run_on field specified but the task definition has a "+
+			"distro field specified", func() {
+			project := &model.Project{
+				Identifier: "projectId",
+				BuildVariants: []model.BuildVariant{
+					{
+						Name: "import",
+						Tasks: []model.BuildVariantTaskUnit{
+							{
+								Name: "silhouettes",
+							},
+						},
+					},
+				},
+				Tasks: []model.ProjectTask{
+					{
+						Name: "silhouettes",
+						RunOn: []string{
+							"echoes",
+						},
+					},
+				},
+			}
+			So(ensureHasNecessaryBVFields(project),
+				ShouldResemble, ValidationErrors{})
+		})
+		Convey("no error should be thrown if the buildvariant does not "+
 			"have a run_on field specified but all tasks within it have a "+
 			"distro field specified", func() {
 			project := &model.Project{
@@ -1982,7 +2015,8 @@ func TestTaskValidation(t *testing.T) {
     - name: "this task is too long"
 `
 	var proj model.Project
-	_, err := model.LoadProjectInto([]byte(simpleYml), "", &proj)
+	ctx := context.Background()
+	_, err := model.LoadProjectInto(ctx, []byte(simpleYml), nil, "", &proj)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "spaces are unauthorized")
 }
@@ -2008,7 +2042,8 @@ func TestTaskGroupValidation(t *testing.T) {
     - name: example_task_group
   `
 	var proj model.Project
-	pp, err := model.LoadProjectInto([]byte(duplicateYml), "", &proj)
+	ctx := context.Background()
+	pp, err := model.LoadProjectInto(ctx, []byte(duplicateYml), nil, "", &proj)
 	assert.NotNil(proj)
 	assert.NotNil(pp)
 	assert.NoError(err)
@@ -2048,7 +2083,7 @@ func TestTaskGroupValidation(t *testing.T) {
     tasks:
     - name: foo
   `
-	pp, err = model.LoadProjectInto([]byte(duplicateTaskYml), "", &proj)
+	pp, err = model.LoadProjectInto(ctx, []byte(duplicateTaskYml), nil, "", &proj)
 	assert.NotNil(proj)
 	assert.NotNil(pp)
 	assert.NoError(err)
@@ -2078,7 +2113,7 @@ buildvariants:
   tasks:
   - name: example_task_group
 `
-	pp, err = model.LoadProjectInto([]byte(attachInGroupTeardownYml), "", &proj)
+	pp, err = model.LoadProjectInto(ctx, []byte(attachInGroupTeardownYml), nil, "", &proj)
 	assert.NotNil(proj)
 	assert.NotNil(pp)
 	assert.NoError(err)
@@ -2104,7 +2139,7 @@ buildvariants:
   tasks:
   - name: example_task_group
 `
-	pp, err = model.LoadProjectInto([]byte(largeMaxHostYml), "", &proj)
+	pp, err = model.LoadProjectInto(ctx, []byte(largeMaxHostYml), nil, "", &proj)
 	assert.NotNil(proj)
 	assert.NotNil(pp)
 	assert.NoError(err)
@@ -2149,7 +2184,8 @@ buildvariants:
   - name: example_task_group
 `
 	proj := model.Project{}
-	pp, err := model.LoadProjectInto([]byte(exampleYml), "example_project", &proj)
+	ctx := context.Background()
+	pp, err := model.LoadProjectInto(ctx, []byte(exampleYml), nil, "example_project", &proj)
 	assert.NotNil(proj)
 	assert.NotNil(pp)
 	assert.NoError(err)
@@ -2159,7 +2195,7 @@ buildvariants:
 	assert.Len(tg.Tasks, 2)
 	assert.Equal("not_in_a_task_group", proj.Tasks[0].Name)
 	assert.Equal("task_in_a_task_group_1", proj.Tasks[0].DependsOn[0].Name)
-	syntaxErrs := CheckProjectSyntax(&proj)
+	syntaxErrs := CheckProjectSyntax(&proj, false)
 	assert.Len(syntaxErrs, 0)
 	semanticErrs := CheckProjectSemantics(&proj)
 	assert.Len(semanticErrs, 0)
@@ -2187,11 +2223,12 @@ buildvariants:
   - name: task1
 `
 	proj := model.Project{}
-	pp, err := model.LoadProjectInto([]byte(exampleYml), "example_project", &proj)
+	ctx := context.Background()
+	pp, err := model.LoadProjectInto(ctx, []byte(exampleYml), nil, "example_project", &proj)
 	assert.NotNil(proj)
 	assert.NotNil(pp)
 	assert.NoError(err)
-	syntaxErrs := CheckProjectSyntax(&proj)
+	syntaxErrs := CheckProjectSyntax(&proj, false)
 	assert.Len(syntaxErrs, 0)
 	semanticErrs := CheckProjectSemantics(&proj)
 	assert.Len(semanticErrs, 0)
@@ -2244,7 +2281,8 @@ buildvariants:
   - name: example_task_group
 `
 	proj := model.Project{}
-	pp, err := model.LoadProjectInto([]byte(exampleYml), "example_project", &proj)
+	ctx := context.Background()
+	pp, err := model.LoadProjectInto(ctx, []byte(exampleYml), nil, "example_project", &proj)
 	assert.NotNil(proj)
 	assert.NotNil(pp)
 	assert.NoError(err)
@@ -2254,7 +2292,7 @@ buildvariants:
 	assert.Len(tg.Tasks, 1)
 	assert.Equal("not_in_a_task_group", proj.Tasks[0].Name)
 	assert.Equal("not_in_a_task_group", proj.Tasks[1].DependsOn[0].Name)
-	syntaxErrs := CheckProjectSyntax(&proj)
+	syntaxErrs := CheckProjectSyntax(&proj, false)
 	assert.Len(syntaxErrs, 1)
 	assert.Equal("dependency error for 'task_in_a_task_group' task: dependency bv/not_in_a_task_group is not present in the project config", syntaxErrs[0].Error())
 	semanticErrs := CheckProjectSemantics(&proj)
@@ -2294,7 +2332,8 @@ buildvariants:
     - two
 `
 	proj := model.Project{}
-	pp, err := model.LoadProjectInto([]byte(exampleYml), "example_project", &proj)
+	ctx := context.Background()
+	pp, err := model.LoadProjectInto(ctx, []byte(exampleYml), nil, "example_project", &proj)
 	assert.NotNil(proj)
 	assert.NotNil(pp)
 	assert.NoError(err)
@@ -2302,7 +2341,7 @@ buildvariants:
 	proj.BuildVariants[0].DisplayTasks[0].ExecTasks = append(proj.BuildVariants[0].DisplayTasks[0].ExecTasks,
 		"display_three")
 
-	syntaxErrs := CheckProjectSyntax(&proj)
+	syntaxErrs := CheckProjectSyntax(&proj, false)
 	assert.Len(syntaxErrs, 1)
 	assert.Equal(syntaxErrs[0].Level, Error)
 	assert.Equal("execution task 'display_three' has prefix 'display_' which is invalid",
@@ -2330,7 +2369,8 @@ func TestValidateCreateHosts(t *testing.T) {
     - name: t_1
   `
 	var p model.Project
-	pp, err := model.LoadProjectInto([]byte(yml), "id", &p)
+	ctx := context.Background()
+	pp, err := model.LoadProjectInto(ctx, []byte(yml), nil, "id", &p)
 	require.NoError(err)
 	require.NotNil(pp)
 	errs := validateHostCreates(&p)
@@ -2351,7 +2391,7 @@ func TestValidateCreateHosts(t *testing.T) {
     tasks:
     - name: t_1
   `
-	pp, err = model.LoadProjectInto([]byte(yml), "id", &p)
+	pp, err = model.LoadProjectInto(ctx, []byte(yml), nil, "id", &p)
 	require.NoError(err)
 	require.NotNil(pp)
 	errs = validateHostCreates(&p)
@@ -2399,7 +2439,8 @@ func TestDuplicateTaskInBV(t *testing.T) {
     - t1
   `
 	var p model.Project
-	pp, err := model.LoadProjectInto([]byte(yml), "", &p)
+	ctx := context.Background()
+	pp, err := model.LoadProjectInto(ctx, []byte(yml), nil, "", &p)
 	assert.NoError(err)
 	assert.NotNil(pp)
 	errs := validateDuplicateBVTasks(&p)
@@ -2421,7 +2462,7 @@ func TestDuplicateTaskInBV(t *testing.T) {
     - t1
     - tg1
   `
-	pp, err = model.LoadProjectInto([]byte(yml), "", &p)
+	pp, err = model.LoadProjectInto(ctx, []byte(yml), nil, "", &p)
 	assert.NoError(err)
 	assert.NotNil(pp)
 	errs = validateDuplicateBVTasks(&p)
@@ -2446,7 +2487,7 @@ func TestDuplicateTaskInBV(t *testing.T) {
     - tg1
     - tg2
   `
-	pp, err = model.LoadProjectInto([]byte(yml), "", &p)
+	pp, err = model.LoadProjectInto(ctx, []byte(yml), nil, "", &p)
 	assert.NoError(err)
 	assert.NotNil(pp)
 	errs = validateDuplicateBVTasks(&p)
@@ -2473,7 +2514,8 @@ tasks:
       - type: commandLogger
 `
 	project := &model.Project{}
-	pp, err := model.LoadProjectInto([]byte(yml), "", project)
+	ctx := context.Background()
+	pp, err := model.LoadProjectInto(ctx, []byte(yml), nil, "", project)
 	assert.NoError(err)
 	assert.NotNil(pp)
 	errs := checkLoggerConfig(project)
@@ -2492,7 +2534,7 @@ tasks:
     `
 
 	project = &model.Project{}
-	pp, err = model.LoadProjectInto([]byte(yml), "", project)
+	pp, err = model.LoadProjectInto(ctx, []byte(yml), nil, "", project)
 	assert.NoError(err)
 	assert.NotNil(pp)
 	errs = checkLoggerConfig(project)
@@ -2528,11 +2570,12 @@ buildvariants:
   - name: two
 `
 	proj := model.Project{}
-	pp, err := model.LoadProjectInto([]byte(exampleYml), "example_project", &proj)
+	ctx := context.Background()
+	pp, err := model.LoadProjectInto(ctx, []byte(exampleYml), nil, "example_project", &proj)
 	require.NoError(err)
 	assert.NotEmpty(proj)
 	assert.NotNil(pp)
-	errs := CheckProjectSyntax(&proj)
+	errs := CheckProjectSyntax(&proj, false)
 	assert.Len(errs, 1, "one warning was found")
 	assert.NoError(CheckProjectConfigurationIsValid(&proj, &model.ProjectRef{}), "no errors are reported because they are warnings")
 
@@ -2549,7 +2592,7 @@ buildvariants:
     tasks:
       - name: taskA
 `
-	pp, err = model.LoadProjectInto([]byte(exampleYml), "example_project", &proj)
+	pp, err = model.LoadProjectInto(ctx, []byte(exampleYml), nil, "example_project", &proj)
 	require.NoError(err)
 	assert.NotNil(pp)
 	assert.NotEmpty(proj)
@@ -2608,7 +2651,7 @@ func TestValidateTaskSyncCommands(t *testing.T) {
 				},
 			},
 		}
-		assert.Empty(t, validateTaskSyncCommands(p))
+		assert.Empty(t, validateTaskSyncCommands(p, false))
 	})
 	t.Run("TaskWithMultipleS3PushCallsFails", func(t *testing.T) {
 		p := &model.Project{
@@ -2636,7 +2679,7 @@ func TestValidateTaskSyncCommands(t *testing.T) {
 				},
 			},
 		}
-		assert.NotEmpty(t, validateTaskSyncCommands(p))
+		assert.NotEmpty(t, validateTaskSyncCommands(p, false))
 	})
 }
 
@@ -4357,7 +4400,7 @@ func TestBVsWithTasksThatCallCommand(t *testing.T) {
 			},
 		} {
 			t.Run(testName, func(t *testing.T) {
-				bvsToTasksWithCmds, err := bvsWithTasksThatCallCommand(&testCase.project, cmd)
+				bvsToTasksWithCmds, _, err := bvsWithTasksThatCallCommand(&testCase.project, cmd)
 				require.NoError(t, err)
 				assert.Len(t, bvsToTasksWithCmds, len(testCase.expectedBVsToTasksWithCmds))
 				for bv, expectedTasks := range testCase.expectedBVsToTasksWithCmds {
@@ -4428,7 +4471,7 @@ func TestBVsWithTasksThatCallCommand(t *testing.T) {
 			},
 		} {
 			t.Run(testName, func(t *testing.T) {
-				_, err := bvsWithTasksThatCallCommand(&project, cmd)
+				_, _, err := bvsWithTasksThatCallCommand(&project, cmd)
 				assert.Error(t, err)
 			})
 		}

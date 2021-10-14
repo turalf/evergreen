@@ -24,7 +24,7 @@ type DBTaskConnector struct{}
 // FindTaskById uses the service layer's task type to query the backing database for
 // the task with the given taskId.
 func (tc *DBTaskConnector) FindTaskById(taskId string) (*task.Task, error) {
-	t, err := task.FindOne(task.ById(taskId))
+	t, err := task.FindOneId(taskId)
 	if err != nil {
 		return nil, err
 	}
@@ -32,6 +32,20 @@ func (tc *DBTaskConnector) FindTaskById(taskId string) (*task.Task, error) {
 		return nil, gimlet.ErrorResponse{
 			StatusCode: http.StatusNotFound,
 			Message:    fmt.Sprintf("task with id %s not found", taskId),
+		}
+	}
+	return t, nil
+}
+
+func (tc *DBTaskConnector) FindTaskByIdAndExecution(taskId string, execution int) (*task.Task, error) {
+	t, err := task.FindOneIdAndExecution(taskId, execution)
+	if err != nil {
+		return nil, err
+	}
+	if t == nil {
+		return nil, gimlet.ErrorResponse{
+			StatusCode: http.StatusNotFound,
+			Message:    fmt.Sprintf("task with id '%s' not found", taskId),
 		}
 	}
 	return t, nil
@@ -226,10 +240,35 @@ func (tc *DBTaskConnector) GetManifestByTask(taskId string) (*manifest.Manifest,
 	return mfest, nil
 }
 
+type TaskFilterOptions struct {
+	Statuses              []string
+	BaseStatuses          []string
+	Variants              []string
+	TaskNames             []string
+	Page                  int
+	Limit                 int
+	FieldsToProject       []string
+	Sorts                 []task.TasksSortOrder
+	IncludeExecutionTasks bool
+	IncludeBaseTasks      bool
+}
+
 // FindTasksByVersion gets all tasks for a specific version
 // Results can be filtered by task name, variant name and status in addition to being paginated and limited
-func (tc *DBTaskConnector) FindTasksByVersion(versionID string, statuses []string, baseStatuses []string, variant string, taskName string, page, limit int, fieldsToProject []string, sorts []task.TasksSortOrder) ([]task.Task, int, error) {
-	tasks, total, err := task.GetTasksByVersion(versionID, sorts, statuses, baseStatuses, variant, taskName, page, limit, fieldsToProject)
+func (tc *DBTaskConnector) FindTasksByVersion(versionID string, opts TaskFilterOptions) ([]task.Task, int, error) {
+	getTaskByVersionOpts := task.GetTasksByVersionOptions{
+		Statuses:              opts.Statuses,
+		BaseStatuses:          opts.BaseStatuses,
+		Variants:              opts.Variants,
+		TaskNames:             opts.TaskNames,
+		Page:                  opts.Page,
+		Limit:                 opts.Limit,
+		FieldsToProject:       opts.FieldsToProject,
+		Sorts:                 opts.Sorts,
+		IncludeExecutionTasks: opts.IncludeExecutionTasks,
+		IncludeBaseTasks:      opts.IncludeBaseTasks,
+	}
+	tasks, total, err := task.GetTasksByVersion(versionID, getTaskByVersionOpts)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -259,7 +298,15 @@ func (mtc *MockTaskConnector) FindTaskById(taskId string) (*task.Task, error) {
 	return nil, mtc.StoredError
 }
 
-// FindTasksBytaskId
+func (mtc *MockTaskConnector) FindTaskByIdAndExecution(taskId string, execution int) (*task.Task, error) {
+	for _, t := range mtc.CachedTasks {
+		if t.Id == taskId && t.Execution == execution {
+			return &t, mtc.StoredError
+		}
+	}
+	return nil, mtc.StoredError
+}
+
 func (mtc *MockTaskConnector) FindTasksByProjectAndCommit(projectId, commitHash, taskId, status string, limit int) ([]task.Task, error) {
 	if mtc.StoredError != nil {
 		return []task.Task{}, mtc.StoredError
@@ -411,6 +458,6 @@ func (tc *MockTaskConnector) GetManifestByTask(taskId string) (*manifest.Manifes
 	return nil, errors.Errorf("task '%s' not found", taskId)
 }
 
-func (tc *MockTaskConnector) FindTasksByVersion(string, []string, []string, string, string, int, int, []string, []task.TasksSortOrder) ([]task.Task, int, error) {
+func (tc *MockTaskConnector) FindTasksByVersion(string, TaskFilterOptions) ([]task.Task, int, error) {
 	return nil, 0, nil
 }

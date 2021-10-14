@@ -106,6 +106,7 @@ type EnvVar struct {
 type ResourceLimits struct {
 	NumFiles        int `bson:"num_files,omitempty" json:"num_files,omitempty" mapstructure:"num_files,omitempty"`
 	NumProcesses    int `bson:"num_processes,omitempty" json:"num_processes,omitempty" mapstructure:"num_processes,omitempty"`
+	NumTasks        int `bson:"num_tasks,omitempty" json:"num_tasks,omitempty" mapstructure:"num_tasks,omitempty"`
 	LockedMemoryKB  int `bson:"locked_memory,omitempty" json:"locked_memory,omitempty" mapstructure:"locked_memory,omitempty"`
 	VirtualMemoryKB int `bson:"virtual_memory,omitempty" json:"virtual_memory,omitempty" mapstructure:"virtual_memory,omitempty"`
 }
@@ -196,7 +197,8 @@ func (d *Distro) ValidateBootstrapSettings() error {
 	catcher.NewWhen(d.IsWindows() && d.BootstrapSettings.ServiceUser == "", "service user cannot be empty for non-legacy Windows bootstrapping")
 
 	catcher.NewWhen(d.IsLinux() && d.BootstrapSettings.ResourceLimits.NumFiles < -1, "max number of files should be a positive number or -1")
-	catcher.NewWhen(d.IsLinux() && d.BootstrapSettings.ResourceLimits.NumProcesses < -1, "max number of files should be a positive number or -1")
+	catcher.NewWhen(d.IsLinux() && d.BootstrapSettings.ResourceLimits.NumProcesses < -1, "max number of processes should be a positive number or -1")
+	catcher.NewWhen(d.IsLinux() && d.BootstrapSettings.ResourceLimits.NumTasks < -1, "max number of tasks should be a positive number or -1")
 	catcher.NewWhen(d.IsLinux() && d.BootstrapSettings.ResourceLimits.LockedMemoryKB < -1, "max locked memory should be a positive number or -1")
 	catcher.NewWhen(d.IsLinux() && d.BootstrapSettings.ResourceLimits.VirtualMemoryKB < -1, "max virtual memory should be a positive number or -1")
 
@@ -214,6 +216,7 @@ type HostAllocatorSettings struct {
 	MaximumHosts           int           `bson:"maximum_hosts" json:"maximum_hosts" mapstructure:"maximum_hosts"`
 	RoundingRule           string        `bson:"rounding_rule" json:"rounding_rule" mapstructure:"rounding_rule"`
 	FeedbackRule           string        `bson:"feedback_rule" json:"feedback_rule" mapstructure:"feedback_rule"`
+	HostsOverallocatedRule string        `bson:"hosts_overallocated_rule" json:"hosts_overallocated_rule" mapstructure:"hosts_overallocated_rule"`
 	AcceptableHostIdleTime time.Duration `bson:"acceptable_host_idle_time" json:"acceptable_host_idle_time" mapstructure:"acceptable_host_idle_time"`
 	FutureHostFraction     float64       `bson:"future_host_fraction" json:"future_host_fraction" mapstructure:"future_host_fraction"`
 }
@@ -232,6 +235,7 @@ type PlannerSettings struct {
 	MainlineTimeInQueueFactor int64         `bson:"mainline_time_in_queue_factor" json:"mainline_time_in_queue_factor" mapstructure:"mainline_time_in_queue_factor"`
 	ExpectedRuntimeFactor     int64         `bson:"expected_runtime_factor" json:"expected_runtime_factor" mapstructure:"expected_runtime_factor"`
 	GenerateTaskFactor        int64         `bson:"generate_task_factor" json:"generate_task_factor" mapstructure:"generate_task_factor"`
+	StepbackTaskFactor        int64         `bson:"stepback_task_factor" json:"stepback_task_factor" mapstructure:"stepback_task_factor"`
 
 	maxDurationPerHost time.Duration
 }
@@ -364,6 +368,13 @@ func (d *Distro) GetMainlineTimeInQueueFactor() int64 {
 	return d.PlannerSettings.MainlineTimeInQueueFactor
 }
 
+func (d *Distro) GetStepbackTaskFactor() int64 {
+	if d.PlannerSettings.StepbackTaskFactor <= 0 {
+		return 1
+	}
+	return d.PlannerSettings.StepbackTaskFactor
+}
+
 func (d *Distro) GetExpectedRuntimeFactor() int64 {
 	if d.PlannerSettings.ExpectedRuntimeFactor <= 0 {
 		return 1
@@ -446,7 +457,7 @@ func (d *Distro) HomeDir() string {
 	if d.User == "root" {
 		return filepath.Join("/", d.User)
 	}
-	if d.Arch == evergreen.ArchDarwinAmd64 {
+	if d.Arch == evergreen.ArchDarwinAmd64 || d.Arch == evergreen.ArchDarwinArm64 {
 		return filepath.Join("/Users", d.User)
 	}
 	return filepath.Join("/home", d.User)
@@ -621,6 +632,7 @@ func (d *Distro) GetResolvedHostAllocatorSettings(s *evergreen.Settings) (HostAl
 		AcceptableHostIdleTime: has.AcceptableHostIdleTime,
 		RoundingRule:           has.RoundingRule,
 		FeedbackRule:           has.FeedbackRule,
+		HostsOverallocatedRule: has.HostsOverallocatedRule,
 		FutureHostFraction:     has.FutureHostFraction,
 	}
 
@@ -641,6 +653,9 @@ func (d *Distro) GetResolvedHostAllocatorSettings(s *evergreen.Settings) (HostAl
 	}
 	if resolved.FeedbackRule == evergreen.HostAllocatorUseDefaultFeedback {
 		resolved.FeedbackRule = config.HostAllocatorFeedbackRule
+	}
+	if resolved.HostsOverallocatedRule == evergreen.HostsOverallocatedUseDefault {
+		resolved.HostsOverallocatedRule = config.HostsOverallocatedRule
 	}
 	if resolved.FutureHostFraction == 0 {
 		resolved.FutureHostFraction = config.FutureHostFraction
@@ -733,6 +748,10 @@ func (d *Distro) GetResolvedPlannerSettings(s *evergreen.Settings) (PlannerSetti
 	if resolved.GenerateTaskFactor == 0 {
 		resolved.GenerateTaskFactor = config.GenerateTaskFactor
 	}
+
+	// StepbackTaskFactor isn't configurable by distro
+	resolved.StepbackTaskFactor = config.StepbackTaskFactor
+
 	if catcher.HasErrors() {
 		return PlannerSettings{}, errors.Wrapf(catcher.Resolve(), "cannot resolve PlannerSettings for distro '%s'", d.Id)
 	}

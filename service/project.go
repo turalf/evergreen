@@ -12,6 +12,7 @@ import (
 	"github.com/evergreen-ci/evergreen/model/commitqueue"
 	"github.com/evergreen-ci/evergreen/model/event"
 	"github.com/evergreen-ci/evergreen/model/patch"
+	"github.com/evergreen-ci/evergreen/model/user"
 	restModel "github.com/evergreen-ci/evergreen/rest/model"
 	"github.com/evergreen-ci/evergreen/trigger"
 	"github.com/evergreen-ci/evergreen/units"
@@ -26,11 +27,8 @@ import (
 
 // filterViewableProjects iterates through a list of projects and returns a list of all the projects that a user
 // is authorized to view
-func (uis *UIServer) filterViewableProjects(u gimlet.User) ([]model.ProjectRef, error) {
-	env := evergreen.GetEnvironment()
-	ctx, cancel := env.Context()
-	defer cancel()
-	projectIds, err := rolemanager.FindAllowedResources(ctx, env.RoleManager(), u.Roles(), evergreen.ProjectResourceType, evergreen.PermissionProjectSettings, evergreen.ProjectSettingsView.Value)
+func (uis *UIServer) filterViewableProjects(u *user.DBUser) ([]model.ProjectRef, error) {
+	projectIds, err := u.GetViewableProjects()
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +72,7 @@ func (uis *UIServer) projectPage(w http.ResponseWriter, r *http.Request) {
 
 	id := gimlet.GetVars(r)["project_id"]
 
-	projRef, err := model.FindOneProjectRef(id)
+	projRef, err := model.FindBranchProjectRef(id)
 	if err != nil {
 		uis.LoggedError(w, r, http.StatusInternalServerError, err)
 		return
@@ -91,7 +89,7 @@ func (uis *UIServer) projectPage(w http.ResponseWriter, r *http.Request) {
 	if projRef.UseRepoSettings {
 		projRef, err = model.FindMergedProjectRef(projRef.Id)
 		if err != nil {
-			uis.LoggedError(w, r, http.StatusInternalServerError, err)
+			uis.LoggedError(w, r, http.StatusNotFound, err)
 			return
 		}
 	}
@@ -99,7 +97,7 @@ func (uis *UIServer) projectPage(w http.ResponseWriter, r *http.Request) {
 	// Replace ChildProject IDs of PatchTriggerAliases with the ChildProject's Identifier
 	for i, t := range projRef.PatchTriggerAliases {
 		var childProject *model.ProjectRef
-		childProject, err = model.FindOneProjectRef(t.ChildProject)
+		childProject, err = model.FindBranchProjectRef(t.ChildProject)
 		if err != nil {
 			uis.LoggedError(w, r, http.StatusInternalServerError, err)
 			continue
@@ -163,12 +161,10 @@ func (uis *UIServer) projectPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var hook *model.GithubHook
-	if projRef.Owner != "" && projRef.Repo != "" {
-		hook, err = model.FindGithubHook(projRef.Owner, projRef.Repo)
-		if err != nil {
-			uis.LoggedError(w, r, http.StatusInternalServerError, err)
-			return
-		}
+	hook, err = model.FindGithubHook(projRef.Owner, projRef.Repo)
+	if err != nil {
+		uis.LoggedError(w, r, http.StatusInternalServerError, err)
+		return
 	}
 	subscriptions, err := event.FindSubscriptionsByOwner(projRef.Id, event.OwnerTypeProject)
 	if err != nil {
@@ -229,7 +225,7 @@ func (uis *UIServer) modifyProject(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	projectRef, err := model.FindOneProjectRef(id)
+	projectRef, err := model.FindBranchProjectRef(id)
 	if err != nil {
 		uis.LoggedError(w, r, http.StatusInternalServerError, err)
 		return
@@ -316,6 +312,17 @@ func (uis *UIServer) modifyProject(w http.ResponseWriter, r *http.Request) {
 	if len(uis.Settings.GithubOrgs) > 0 && !utility.StringSliceContains(uis.Settings.GithubOrgs, responseRef.Owner) {
 		http.Error(w, "owner not validated in settings", http.StatusBadRequest)
 		return
+	}
+	if responseRef.Identifier != origProjectRef.Identifier {
+		conflictingRef, err := model.FindBranchProjectRef(responseRef.Identifier)
+		if err != nil {
+			http.Error(w, "error checking for conflicting project ref", http.StatusInternalServerError)
+			return
+		}
+		if conflictingRef != nil && conflictingRef.Id != origProjectRef.Id {
+			http.Error(w, "identifier already being used for another project", http.StatusBadRequest)
+			return
+		}
 	}
 
 	errs := []string{}
@@ -462,10 +469,6 @@ func (uis *UIServer) modifyProject(w http.ResponseWriter, r *http.Request) {
 				uis.LoggedError(w, r, http.StatusBadRequest, errors.New("cannot enable git tag versions without version definitions"))
 				return
 			}
-			if len(responseRef.GitTagAuthorizedUsers) == 0 && len(responseRef.GitTagAuthorizedTeams) == 0 {
-				uis.LoggedError(w, r, http.StatusBadRequest, errors.New("must authorize users or teams to create git tag versions"))
-				return
-			}
 		}
 
 		// Prevent multiple projects tracking the same repo/branch from enabling commit queue
@@ -544,6 +547,7 @@ func (uis *UIServer) modifyProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	projectRef.Id = id
+	projectRef.Identifier = responseRef.Identifier
 	projectRef.DisplayName = responseRef.DisplayName
 	projectRef.RemotePath = responseRef.RemotePath
 	projectRef.SpawnHostScriptPath = responseRef.SpawnHostScriptPath
@@ -723,7 +727,7 @@ func (uis *UIServer) modifyProject(w http.ResponseWriter, r *http.Request) {
 
 	username := dbUser.DisplayName()
 
-	before := &model.ProjectSettingsEvent{
+	before := &model.ProjectSettings{
 		ProjectRef:         origProjectRef,
 		GitHubHooksEnabled: origGithubWebhookEnabled,
 		Vars:               origProjectVars,
@@ -733,7 +737,7 @@ func (uis *UIServer) modifyProject(w http.ResponseWriter, r *http.Request) {
 
 	currentAliases, _ := model.FindAliasesForProject(id)
 	currentSubscriptions, _ := event.FindSubscriptionsByOwner(projectRef.Id, event.OwnerTypeProject)
-	after := &model.ProjectSettingsEvent{
+	after := &model.ProjectSettings{
 		ProjectRef:         *projectRef,
 		GitHubHooksEnabled: hook != nil,
 		Vars:               *projectVars,
@@ -746,9 +750,9 @@ func (uis *UIServer) modifyProject(w http.ResponseWriter, r *http.Request) {
 
 	if origProjectRef.Restricted != projectRef.Restricted {
 		if projectRef.IsRestricted() {
-			err = projectRef.MakeRestricted(ctx)
+			err = projectRef.MakeRestricted()
 		} else {
-			err = projectRef.MakeUnrestricted(ctx)
+			err = projectRef.MakeUnrestricted()
 		}
 		if err != nil {
 			uis.LoggedError(w, r, http.StatusInternalServerError, err)
@@ -779,9 +783,9 @@ func (uis *UIServer) addProject(w http.ResponseWriter, r *http.Request) {
 	dbUser := MustHaveUser(r)
 	_ = MustHaveProjectContext(r)
 
-	id := gimlet.GetVars(r)["project_id"]
+	identifier := gimlet.GetVars(r)["project_id"]
 
-	projectRef, err := model.FindOneProjectRef(id)
+	projectRef, err := model.FindBranchProjectRef(identifier)
 	if err != nil {
 		uis.LoggedError(w, r, http.StatusInternalServerError, err)
 		return
@@ -790,9 +794,18 @@ func (uis *UIServer) addProject(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Project already exists", http.StatusBadRequest)
 		return
 	}
+	newProject := model.ProjectRef{Identifier: identifier}
 
-	newProject := model.ProjectRef{Identifier: id}
+	// the immutable ID may have optionally been passed in
+	projectWithId := struct {
+		Id string `json:"id"`
+	}{}
 
+	if err = utility.ReadJSON(util.NewRequestReader(r), &projectWithId); err != nil {
+		http.Error(w, fmt.Sprintf("Error parsing request body %v", err), http.StatusInternalServerError)
+		return
+	}
+	newProject.Id = projectWithId.Id
 	err = newProject.Add(dbUser)
 	if err != nil {
 		grip.Error(message.WrapError(err, message.Fields{
@@ -814,8 +827,8 @@ func (uis *UIServer) addProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	username := dbUser.DisplayName()
-	if err = model.LogProjectAdded(id, username); err != nil {
-		grip.Infof("Could not log new project %s", id)
+	if err = model.LogProjectAdded(identifier, username); err != nil {
+		grip.Infof("Could not log new project %s", identifier)
 	}
 
 	allProjects, err := uis.filterViewableProjects(dbUser)
@@ -829,7 +842,7 @@ func (uis *UIServer) addProject(w http.ResponseWriter, r *http.Request) {
 		Available   bool
 		ProjectId   string
 		AllProjects []model.ProjectRef
-	}{true, id, allProjects}
+	}{true, identifier, allProjects}
 
 	gimlet.WriteJSON(w, data)
 }
@@ -856,7 +869,7 @@ func (uis *UIServer) setRevision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	projectRef, err := model.FindOneProjectRef(project)
+	projectRef, err := model.FindBranchProjectRef(project)
 	if err != nil {
 		uis.LoggedError(w, r, http.StatusInternalServerError, err)
 		return
@@ -891,7 +904,7 @@ func (uis *UIServer) setRevision(w http.ResponseWriter, r *http.Request) {
 func (uis *UIServer) projectEvents(w http.ResponseWriter, r *http.Request) {
 	// Validate the project exists
 	id := gimlet.GetVars(r)["project_id"]
-	projectRef, err := model.FindOneProjectRef(id)
+	projectRef, err := model.FindBranchProjectRef(id)
 	if err != nil {
 		uis.LoggedError(w, r, http.StatusInternalServerError, err)
 		return

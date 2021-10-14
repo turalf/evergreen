@@ -79,7 +79,7 @@ func (s *VersionConnectorSuite) SetupTest() {
 	}
 
 	builds := []*build.Build{
-		{Id: "build1", Tasks: []build.TaskCache{{Id: "task5"}}},
+		{Id: "build1"},
 	}
 
 	for _, item := range versions {
@@ -409,7 +409,8 @@ func TestCreateVersionFromConfig(t *testing.T) {
 		}`
 
 	p := &model.Project{}
-	pp, err := model.LoadProjectInto([]byte(config1), ref.Id, p)
+	ctx := context.Background()
+	pp, err := model.LoadProjectInto(ctx, []byte(config1), nil, ref.Id, p)
 	assert.NoError(err)
 	projectInfo := &model.ProjectInfo{
 		Project:             p,
@@ -434,7 +435,7 @@ func TestCreateVersionFromConfig(t *testing.T) {
 	pp, err = model.ParserProjectFindOneById(newVersion.Id)
 	assert.NoError(err)
 	assert.NotNil(pp)
-	assert.True(pp.Stepback)
+	assert.True(utility.FromBoolPtr(pp.Stepback))
 
 	b, err := build.FindOneId(newVersion.BuildIds[0])
 	assert.NoError(err)
@@ -459,7 +460,7 @@ tasks:
 - name: t1
 `
 	p = &model.Project{}
-	pp, err = model.LoadProjectInto([]byte(config2), ref.Id, p)
+	pp, err = model.LoadProjectInto(ctx, []byte(config2), nil, ref.Id, p)
 	assert.NoError(err)
 	projectInfo.Project = p
 	projectInfo.IntermediateProject = pp
@@ -480,7 +481,7 @@ tasks:
 	pp, err = model.ParserProjectFindOneById(newVersion.Id)
 	assert.NoError(err)
 	assert.NotNil(pp)
-	assert.True(pp.Stepback)
+	assert.True(utility.FromBoolPtr(pp.Stepback))
 
 	b, err = build.FindOneId(newVersion.BuildIds[0])
 	assert.NoError(err)

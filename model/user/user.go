@@ -7,6 +7,7 @@ import (
 	"github.com/evergreen-ci/evergreen/db"
 	"github.com/evergreen-ci/evergreen/model/event"
 	"github.com/evergreen-ci/gimlet"
+	"github.com/evergreen-ci/gimlet/rolemanager"
 	"github.com/evergreen-ci/utility"
 	"github.com/mongodb/anser/bsonutil"
 	adb "github.com/mongodb/anser/db"
@@ -38,11 +39,10 @@ func (u *DBUser) MarshalBSON() ([]byte, error)  { return mgobson.Marshal(u) }
 func (u *DBUser) UnmarshalBSON(in []byte) error { return mgobson.Unmarshal(in, u) }
 
 type LoginCache struct {
-	Token          string    `bson:"token"`
-	TTL            time.Time `bson:"ttl"`
-	AccessToken    string    `bson:"access_token,omitempty"`
-	RefreshToken   string    `bson:"refresh_token,omitempty"`
-	ReauthAttempts int       `bson:"reauth_attempts,omitempty"`
+	Token        string    `bson:"token,omitempty"`
+	TTL          time.Time `bson:"ttl,omitempty"`
+	AccessToken  string    `bson:"access_token,omitempty"`
+	RefreshToken string    `bson:"refresh_token,omitempty"`
 }
 
 type GithubUser struct {
@@ -306,7 +306,7 @@ func (u *DBUser) AddRole(role string) error {
 		return nil
 	}
 	update := bson.M{
-		"$push": bson.M{RolesKey: role},
+		"$addToSet": bson.M{RolesKey: role},
 	}
 	if err := UpdateOne(bson.M{IdKey: u.Id}, update); err != nil {
 		return err
@@ -331,6 +331,23 @@ func (u *DBUser) RemoveRole(role string) error {
 	}
 
 	return event.LogUserEvent(u.Id, event.UserEventTypeRolesUpdate, before, u.SystemRoles)
+}
+
+// GetViewableProjects returns the lists of projects/repos the user can view.
+func (u *DBUser) GetViewableProjects() ([]string, error) {
+	if evergreen.PermissionsDisabledForTests() {
+		return nil, nil
+	}
+	env := evergreen.GetEnvironment()
+	roleManager := env.RoleManager()
+	ctx, cancel := env.Context()
+	defer cancel()
+
+	viewProjects, err := rolemanager.FindAllowedResources(ctx, roleManager, u.Roles(), evergreen.ProjectResourceType, evergreen.PermissionProjectSettings, evergreen.ProjectSettingsView.Value)
+	if err != nil {
+		return nil, err
+	}
+	return viewProjects, nil
 }
 
 func (u *DBUser) HasPermission(opts gimlet.PermissionOpts) bool {
@@ -361,27 +378,6 @@ func (u *DBUser) HasPermission(opts gimlet.PermissionOpts) bool {
 	return false
 }
 
-// IncReauthAttempts increases the number of attempted reauths for this user.
-func (u *DBUser) IncReauthAttempts() error {
-	info, err := db.FindAndModify(
-		Collection,
-		bson.M{IdKey: u.Id},
-		nil,
-		adb.Change{
-			Update: bson.M{
-				"$inc": bson.M{bsonutil.GetDottedKeyName(LoginCacheKey, LoginCacheReauthAttemptsKey): 1},
-			},
-			ReturnNew: true,
-		}, u)
-	if err != nil {
-		return errors.Wrap(err, "could not increment reauth attempts")
-	}
-	if info.Updated != 1 {
-		return errors.Errorf("could not find user '%s' to update", u.Id)
-	}
-	return nil
-}
-
 func (u *DBUser) DeleteAllRoles() error {
 	info, err := db.FindAndModify(
 		Collection,
@@ -402,6 +398,9 @@ func (u *DBUser) DeleteAllRoles() error {
 }
 
 func (u *DBUser) DeleteRoles(roles []string) error {
+	if len(roles) == 0 {
+		return nil
+	}
 	info, err := db.FindAndModify(
 		Collection,
 		bson.M{IdKey: u.Id},

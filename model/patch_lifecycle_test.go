@@ -32,7 +32,7 @@ var (
 	patchTestConfig = testutil.TestConfig()
 	configFilePath  = "testing/mci.yml"
 	patchedProject  = "mci-config"
-	patchedRevision = "582257a4ca3a9c890959b04d4dd2de5e4d34e9e7"
+	patchedRevision = "3578f10b95fb82183662387048b268c54fac50fb"
 	patchFile       = "testdata/patch2.diff"
 	patchOwner      = "deafgoat"
 	patchRepo       = "config"
@@ -330,7 +330,7 @@ func TestMakePatchedConfig(t *testing.T) {
 			So(projectData, ShouldNotBeNil)
 
 			project := &Project{}
-			_, err = LoadProjectInto(projectData, "", project)
+			_, err = LoadProjectInto(ctx, projectData, nil, "", project)
 			So(err, ShouldBeNil)
 			So(len(project.Tasks), ShouldEqual, 2)
 		})
@@ -352,7 +352,7 @@ func TestMakePatchedConfig(t *testing.T) {
 			So(err, ShouldBeNil)
 
 			project := &Project{}
-			_, err = LoadProjectInto(projectData, "", project)
+			_, err = LoadProjectInto(ctx, projectData, nil, "", project)
 			So(err, ShouldBeNil)
 			So(project, ShouldNotBeNil)
 
@@ -630,7 +630,8 @@ func TestAddNewPatch(t *testing.T) {
 	assert.NoError(v.Insert())
 	assert.NoError(baseVersion.Insert())
 	ref := ProjectRef{
-		Id: "project",
+		Id:         "project",
+		Identifier: "project_name",
 	}
 	assert.NoError(ref.Insert())
 
@@ -666,15 +667,13 @@ func TestAddNewPatch(t *testing.T) {
 		},
 	})
 
-	assert.NoError(AddNewBuildsForPatch(context.Background(), p, v, proj, tasks))
+	assert.NoError(AddNewBuildsForPatch(context.Background(), p, v, proj, tasks, &ref))
 	dbBuild, err := build.FindOne(db.Q{})
 	assert.NoError(err)
 	assert.NotNil(dbBuild)
 	assert.Len(dbBuild.Tasks, 2)
-	assert.Equal(dbBuild.Tasks[0].DisplayName, "displaytask1")
-	assert.Equal(dbBuild.Tasks[1].DisplayName, "task3")
 
-	assert.NoError(AddNewTasksForPatch(context.Background(), p, v, proj, tasks))
+	assert.NoError(AddNewTasksForPatch(context.Background(), p, v, proj, tasks, ref.Identifier))
 	dbTasks, err := task.FindAll(task.ByBuildId(dbBuild.Id))
 	assert.NoError(err)
 	assert.NotNil(dbBuild)
@@ -691,7 +690,7 @@ func TestAddNewPatch(t *testing.T) {
 func TestAddNewPatchWithMissingBaseVersion(t *testing.T) {
 	assert := assert.New(t)
 
-	require.NoError(t, db.ClearCollections(patch.Collection, VersionCollection, build.Collection, task.Collection), "problem clearing collections")
+	require.NoError(t, db.ClearCollections(patch.Collection, VersionCollection, build.Collection, task.Collection, ProjectRefCollection), "problem clearing collections")
 	p := &patch.Patch{
 		Activated: true,
 	}
@@ -703,6 +702,11 @@ func TestAddNewPatchWithMissingBaseVersion(t *testing.T) {
 	}
 	assert.NoError(p.Insert())
 	assert.NoError(v.Insert())
+	ref := ProjectRef{
+		Id:         "project",
+		Identifier: "project_name",
+	}
+	assert.NoError(ref.Insert())
 
 	proj := &Project{
 		Identifier: "project",
@@ -736,15 +740,13 @@ func TestAddNewPatchWithMissingBaseVersion(t *testing.T) {
 		},
 	})
 
-	assert.NoError(AddNewBuildsForPatch(context.Background(), p, v, proj, tasks))
+	assert.NoError(AddNewBuildsForPatch(context.Background(), p, v, proj, tasks, &ref))
 	dbBuild, err := build.FindOne(db.Q{})
 	assert.NoError(err)
 	assert.NotNil(dbBuild)
 	assert.Len(dbBuild.Tasks, 2)
-	assert.Equal(dbBuild.Tasks[0].DisplayName, "displaytask1")
-	assert.Equal(dbBuild.Tasks[1].DisplayName, "task3")
 
-	assert.NoError(AddNewTasksForPatch(context.Background(), p, v, proj, tasks))
+	assert.NoError(AddNewTasksForPatch(context.Background(), p, v, proj, tasks, ref.Identifier))
 	dbTasks, err := task.FindAll(task.ByBuildId(dbBuild.Id))
 	assert.NoError(err)
 	assert.NotNil(dbBuild)

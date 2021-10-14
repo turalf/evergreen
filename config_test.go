@@ -78,9 +78,9 @@ func TestGetGithubSettings(t *testing.T) {
 	assert.NoError(err)
 	assert.NotNil(settings.Credentials["github"])
 
-	token, err = settings.GetGithubOauthString()
+	tokens, err := settings.GetGithubOauthStrings()
 	assert.NoError(err)
-	assert.Equal(settings.Credentials["github"], token)
+	assert.Equal(settings.Credentials["github"], tokens[0])
 
 	assert.NotPanics(func() {
 		settings := &Settings{}
@@ -254,6 +254,7 @@ func (s *AdminSuite) TestAmboyConfig() {
 		GroupPruneFrequencyMinutes:            60,
 		GroupTTLMinutes:                       70,
 		LockTimeoutMinutes:                    7,
+		SampleSize:                            200,
 	}
 
 	err := config.Set()
@@ -292,6 +293,7 @@ func (s *AdminSuite) TestAuthConfig() {
 			ClientID:           "id",
 			ClientSecret:       "secret",
 			Issuer:             "issuer",
+			Scopes:             []string{"openid", "email", "profile", "offline_access"},
 			UserGroup:          "group",
 			ExpireAfterMinutes: 60,
 		},
@@ -356,6 +358,19 @@ func (s *AdminSuite) TestJiraConfig() {
 	s.NoError(err)
 	s.NotNil(settings)
 	s.Equal(config, settings.Jira)
+}
+
+func (s *AdminSuite) TestPodinitConfig() {
+	config := PodInitConfig{
+		S3BaseURL: "s3_base_url",
+	}
+
+	err := config.Set()
+	s.Require().NoError(err)
+	settings, err := GetConfig()
+	s.Require().NoError(err)
+	s.Require().NotNil(settings)
+	s.Equal(config, settings.PodInit)
 }
 
 func (s *AdminSuite) TestProvidersConfig() {
@@ -837,7 +852,7 @@ func (s *AdminSuite) TestSSHKeysAppendOnly() {
 	newSettings.SSHKeyPairs = nil
 	s.Error(newSettings.Validate(), "should not be able to delete existing key pair")
 
-	newSettings.SSHKeyPairs = []SSHKeyPair{defaultPair(), SSHKeyPair{
+	newSettings.SSHKeyPairs = []SSHKeyPair{defaultPair(), {
 		Name:    "bar",
 		Public:  "public",
 		Private: "private",

@@ -856,7 +856,8 @@ func TestSetParametersFromParent(t *testing.T) {
 		},
 	}
 	assert.NoError(p.Insert())
-	assert.NoError(p.SetParametersFromParent())
+	_, err := p.SetParametersFromParent()
+	assert.NoError(err)
 	assert.Equal(parentPatch.Triggers.DownstreamParameters[0].Key, p.Parameters[0].Key)
 }
 
@@ -892,4 +893,56 @@ func TestSetDownstreamParameters(t *testing.T) {
 	assert.Equal(p.Triggers.DownstreamParameters[0].Key, "key_0")
 	assert.Equal(p.Triggers.DownstreamParameters[1].Key, "key_1")
 	assert.Equal(p.Triggers.DownstreamParameters[2].Key, "key_2")
+}
+
+func TestSetTriggerAliases(t *testing.T) {
+	assert := assert.New(t)
+	assert.NoError(db.ClearCollections(Collection))
+
+	p := Patch{
+		Id: bson.NewObjectId(),
+		Triggers: TriggerInfo{
+			Aliases: []string{"alias_0"},
+		},
+	}
+	assert.NoError(p.Insert())
+
+	p.Triggers.Aliases = []string{
+		"alias_1",
+		"alias_2",
+	}
+
+	assert.NoError(p.SetTriggerAliases())
+
+	dbPatch, err := FindOne(ById(p.Id))
+	assert.NoError(err)
+	assert.Equal(dbPatch.Triggers.Aliases[0], "alias_0")
+	assert.Equal(dbPatch.Triggers.Aliases[1], "alias_1")
+	assert.Equal(dbPatch.Triggers.Aliases[2], "alias_2")
+}
+
+func TestSetChildPatches(t *testing.T) {
+	assert := assert.New(t)
+	assert.NoError(db.ClearCollections(Collection))
+
+	p := Patch{
+		Id: bson.NewObjectId(),
+		Triggers: TriggerInfo{
+			ChildPatches: []string{"id_0"},
+		},
+	}
+	assert.NoError(p.Insert())
+
+	p.Triggers.ChildPatches = []string{
+		"id_1",
+		"id_2",
+	}
+
+	assert.NoError(p.SetChildPatches())
+
+	dbPatch, err := FindOne(ById(p.Id))
+	assert.NoError(err)
+	assert.Equal(dbPatch.Triggers.ChildPatches[0], "id_0")
+	assert.Equal(dbPatch.Triggers.ChildPatches[1], "id_1")
+	assert.Equal(dbPatch.Triggers.ChildPatches[2], "id_2")
 }

@@ -24,7 +24,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readconcern"
 	"go.mongodb.org/mongo-driver/mongo/writeconcern"
-	yaml "gopkg.in/yaml.v2"
+	yaml "gopkg.in/yaml.v3"
 )
 
 var (
@@ -32,10 +32,10 @@ var (
 	BuildRevision = ""
 
 	// Commandline Version String; used to control auto-updating.
-	ClientVersion = "2021-03-29"
+	ClientVersion = "2021-09-28"
 
 	// Agent version to control agent rollover.
-	AgentVersion = "2021-04-07"
+	AgentVersion = "2021-10-05"
 )
 
 // ConfigSection defines a sub-document in the evergreen config
@@ -88,6 +88,7 @@ type Settings struct {
 	Notify              NotifyConfig              `yaml:"notify" bson:"notify" json:"notify" id:"notify"`
 	Plugins             PluginConfig              `yaml:"plugins" bson:"plugins" json:"plugins"`
 	PluginsNew          util.KeyValuePairSlice    `yaml:"plugins_new" bson:"plugins_new" json:"plugins_new"`
+	PodInit             PodInitConfig             `yaml:"pod_init" bson:"pod_init" json:"pod_init" id:"pod_init"`
 	PprofPort           string                    `yaml:"pprof_port" bson:"pprof_port" json:"pprof_port"`
 	Providers           CloudProviders            `yaml:"providers" bson:"providers" json:"providers" id:"providers"`
 	RepoTracker         RepoTrackerConfig         `yaml:"repotracker" bson:"repotracker" json:"repotracker" id:"repotracker"`
@@ -492,22 +493,6 @@ func (s *Settings) GetSender(ctx context.Context, env Environment) (send.Sender,
 
 	// set up external log aggregation services:
 	//
-	if endpoint, ok := s.Credentials["sumologic"]; ok {
-		sender, err = send.NewSumo("", endpoint)
-		if err == nil {
-			if err = sender.SetLevel(levelInfo); err != nil {
-				return nil, errors.Wrap(err, "problem setting level")
-			}
-			if err = sender.SetErrorHandler(send.ErrorHandlerFromSender(fallback)); err != nil {
-				return nil, errors.Wrap(err, "problem setting error handler")
-			}
-			senders = append(senders,
-				send.NewBufferedSender(sender,
-					time.Duration(s.LoggerConfig.Buffer.DurationSeconds)*time.Second,
-					s.LoggerConfig.Buffer.Count))
-		}
-	}
-
 	if s.Splunk.Populated() {
 		retryConf := utility.NewDefaultHTTPRetryConf()
 		retryConf.MaxDelay = time.Second
@@ -567,13 +552,28 @@ func (s *Settings) GetSender(ctx context.Context, env Environment) (send.Sender,
 	return send.NewConfiguredMultiSender(senders...), nil
 }
 
-func (s *Settings) GetGithubOauthString() (string, error) {
+func (s *Settings) GetGithubOauthStrings() ([]string, error) {
+	var tokens []string
+	var token_name string
+
 	token, ok := s.Credentials["github"]
 	if ok && token != "" {
-		return token, nil
+		// we want to make sure tokens[0] is always the default token
+		tokens = append(tokens, token)
+	} else {
+		return nil, errors.New("no 'github' token in settings")
 	}
 
-	return "", errors.New("no github token in settings")
+	for i := 1; i < 10; i++ {
+		token_name = fmt.Sprintf("github_alt%d", i)
+		token, ok := s.Credentials[token_name]
+		if ok && token != "" {
+			tokens = append(tokens, token)
+		} else {
+			break
+		}
+	}
+	return tokens, nil
 }
 
 func (s *Settings) GetGithubOauthToken() (string, error) {
@@ -581,17 +581,34 @@ func (s *Settings) GetGithubOauthToken() (string, error) {
 		return "", errors.New("not defined")
 	}
 
-	oauthString, err := s.GetGithubOauthString()
+	oauthStrings, err := s.GetGithubOauthStrings()
 	if err != nil {
 		return "", err
 	}
+	timeSeed := time.Now().Nanosecond()
+	randomStartIdx := timeSeed % len(oauthStrings)
+	var oauthString string
+	for i := range oauthStrings {
+		oauthString = oauthStrings[randomStartIdx+i]
+		splitToken, err := splitToken(oauthString)
+		if err != nil {
+			grip.Error(message.Fields{
+				"error":   err,
+				"message": fmt.Sprintf("problem with github_alt%d", i)})
+		} else {
+			return splitToken, nil
+		}
+	}
+	return "", errors.New("all github tokens are malformatted. Proper format is github:token <token> or github_alt#:token <token>")
+}
+
+func splitToken(oauthString string) (string, error) {
 	splitToken := strings.Split(oauthString, " ")
 	if len(splitToken) != 2 || splitToken[0] != "token" {
 		return "", errors.New("token format was invalid, expected 'token [token]'")
 	}
 	return splitToken[1], nil
 }
-
 func GetServiceFlags() (*ServiceFlags, error) {
 	flags := &ServiceFlags{}
 	if err := flags.Get(GetEnvironment()); err != nil {

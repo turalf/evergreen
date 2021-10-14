@@ -84,6 +84,13 @@ func (s *GithubWebhookRouteSuite) SetupTest() {
 			Queue: map[string][]restModel.APICommitQueueItem{
 				"bth": []restModel.APICommitQueueItem{},
 			},
+			UserPermissions: map[data.UserRepoInfo]string{
+				data.UserRepoInfo{
+					Username: "baxterthehacker",
+					Owner:    "baxterthehacker",
+					Repo:     "public-repo",
+				}: "write",
+			},
 		},
 	}
 
@@ -262,6 +269,20 @@ func (s *GithubWebhookRouteSuite) TestRetryCommentTrigger() {
 	s.True(triggersRetry("created", "  evergreen retry "))
 }
 
+func (s *GithubWebhookRouteSuite) TestUnknownEventType() {
+	var emptyPayload []byte
+	event, err := github.ParseWebHook("unknown_type", emptyPayload)
+	s.Error(err)
+	s.Nil(event)
+
+	s.h.event = event
+	ctx := context.Background()
+	resp := s.h.Run(ctx)
+	if s.NotNil(resp) {
+		s.Equal(http.StatusOK, resp.Status())
+	}
+}
+
 func (s *GithubWebhookRouteSuite) TestTryDequeueCommitQueueItemForPR() {
 	s.NoError(db.ClearCollections(model.ProjectRefCollection, commitqueue.Collection))
 
@@ -319,8 +340,7 @@ func (s *GithubWebhookRouteSuite) TestTryDequeueCommitQueueItemForPR() {
 
 func (s *GithubWebhookRouteSuite) TestCreateVersionForTag() {
 	s.NoError(db.ClearCollections(model.ProjectRefCollection, model.VersionCollection))
-	//createVersionForTag(ctx context.Context, pRef model.ProjectRef, existingVersion *model.Version,
-	//revision model.Revision, tag model.GitTag)
+
 	tag := model.GitTag{
 		Tag:    "release",
 		Pusher: "release-bot",
@@ -337,7 +357,7 @@ func (s *GithubWebhookRouteSuite) TestCreateVersionForTag() {
 		GitTagAuthorizedUsers: []string{"release-bot", "not-release-bot"},
 		GitTagVersionsEnabled: utility.TruePtr(),
 	}
-	v, err := s.h.createVersionForTag(context.Background(), pRef, nil, model.Revision{}, tag)
+	v, err := s.h.createVersionForTag(context.Background(), pRef, nil, model.Revision{}, tag, "")
 	s.NoError(err)
 	s.NotNil(v)
 }

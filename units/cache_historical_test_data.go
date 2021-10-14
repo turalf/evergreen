@@ -188,9 +188,12 @@ func reportTiming(fn func()) time.Duration {
 }
 
 func getTasksToIgnore(projectId string) ([]*regexp.Regexp, error) {
-	ref, err := model.FindOneProjectRef(projectId)
+	ref, err := model.FindMergedProjectRef(projectId)
 	if err != nil {
 		return nil, errors.Wrap(err, "Could not get project ref")
+	}
+	if ref == nil {
+		return nil, errors.Errorf("project ref '%s' not found", projectId)
 	}
 
 	filePatternsStr := ref.FilesIgnoredFromCache
@@ -224,7 +227,10 @@ func (c *cacheHistoricalJobContext) updateHourlyAndDailyStats(ctx context.Contex
 			c.catcher.Add(err)
 		})
 		if err != nil {
-			return timingInfo
+			grip.Warning(message.WrapError(err, message.Fields{
+				"message":    "error iterating over hourly stats",
+				"project_id": c.ProjectID,
+			}))
 		}
 	}
 
@@ -236,7 +242,10 @@ func (c *cacheHistoricalJobContext) updateHourlyAndDailyStats(ctx context.Contex
 			c.catcher.Add(err)
 		})
 		if err != nil {
-			return timingInfo
+			grip.Warning(message.WrapError(err, message.Fields{
+				"message":    "serror iterating over daily stats",
+				"project_id": c.ProjectID,
+			}))
 		}
 	}
 

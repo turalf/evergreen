@@ -12,6 +12,33 @@
       }
     },
     {
+      "query_file": "childPatches.graphql",
+      "result": {
+        "data": {
+          "patch": {
+            "id": "5e4ff3abe3c3317e352062e1",
+            "childPatches": [
+              {
+                "id": "5e4ff3abe3c3317e352062e4",
+                "projectID": "evergreen"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "query_file": "noChildPatches.graphql",
+      "result": {
+        "data": {
+          "patch": {
+            "id": "5d7288d91f8c8a403bc34a7d",
+            "childPatches": null
+          }
+        }
+      }
+    },
+    {
       "query_file": "baseVersionId.graphql",
       "result": {
         "data": {
@@ -134,12 +161,17 @@
         "data": {
           "patch": {
             "project": {
-              "tasks": ["compile", "test", "lint", "coverage", "e2e_test"],
               "variants": [
                 {
                   "name": "ubuntu1604",
                   "displayName": "Ubuntu 16.04",
-                  "tasks": ["compile", "coverage", "e2e_test", "lint", "test"]
+                  "tasks": [
+                    "compile",
+                    "coverage",
+                    "e2e_test",
+                    "lint",
+                    "test"
+                  ]
                 }
               ]
             }
@@ -214,6 +246,52 @@
                 "key": "my_parameter",
                 "value": "this_is_it"
               }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "query_file": "abortedPatchTasks.graphql",
+      "result": {
+        "data": {
+          "patch": {
+            "status": "aborted"
+          }
+        }
+      }
+    },
+    {
+      "query_file": "patch-trigger-aliases.graphql",
+      "result": {
+        "data": {
+          "patch": {
+            "patchTriggerAliases": [
+              {
+                "alias": "test-alias",
+                "childProjectId": "spruce",
+                "childProjectIdentifier": "spruce",
+                "variantsTasks": [
+                  {
+                    "name": "ubuntu1804",
+                    "tasks": [
+                      "compile"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "query_file": "childPatchAliases.graphql",
+      "result": {
+        "data": {
+          "patch": {
+            "childPatchAliases": [
+              { "alias": "evergreen_alias", "patchId": "5e4ff3abe3c3317e352062e4"}
             ]
           }
         }

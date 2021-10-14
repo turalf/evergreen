@@ -10,7 +10,7 @@ import (
 	"github.com/evergreen-ci/evergreen"
 	"github.com/evergreen-ci/evergreen/model"
 	"github.com/pkg/errors"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 // Creates a project ref local config that can be used for testing, with the string identifier given
@@ -24,7 +24,7 @@ func CreateTestLocalConfig(testSettings *evergreen.Settings, projectName, projec
 		projectPath = filepath.Join(config, "project", fmt.Sprintf("%v.yml", projectName))
 	}
 
-	projectRef, err := model.FindOneProjectRef(projectName)
+	projectRef, err := model.FindBranchProjectRef(projectName)
 	if err != nil {
 		return err
 	}

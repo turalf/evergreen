@@ -121,16 +121,16 @@ func listProjects(ctx context.Context, confPath string) error {
 		}
 	}
 
-	sort.Slice(matching, func(i, j int) bool { return matching[i].Id < matching[j].Id })
+	sort.Slice(matching, func(i, j int) bool { return matching[i].Identifier < matching[j].Identifier })
 	fmt.Println(len(matching), "projects:")
 
 	t := tabby.New()
-	t.AddHeader("Id", "Identifier", "Description")
+	t.AddHeader("Identifier", "Id", "Description")
 	for _, prj := range matching {
 		if prj.Id != prj.Identifier {
-			t.AddLine(prj.Id, prj.Identifier, prj.DisplayName)
+			t.AddLine(prj.Identifier, prj.Id, prj.DisplayName)
 		} else {
-			t.AddLine(prj.Id, "", prj.DisplayName)
+			t.AddLine(prj.Identifier, "", prj.DisplayName)
 		}
 	}
 	t.Print()
@@ -373,7 +373,8 @@ func loadLocalConfig(filepath string) (*model.Project, error) {
 	}
 
 	project := &model.Project{}
-	if _, err = model.LoadProjectInto(configBytes, "", project); err != nil {
+	ctx := context.Background()
+	if _, err = model.LoadProjectInto(ctx, configBytes, nil, "", project); err != nil {
 		return nil, errors.Wrap(err, "error loading project")
 	}
 

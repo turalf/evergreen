@@ -177,14 +177,16 @@ func TestClient(t *testing.T) {
 
 func validCreateOptions() CreateOptions {
 	return CreateOptions{
-		Project:         "project",
-		Version:         "version",
-		Variant:         "variant",
-		TaskID:          "task_id",
-		TaskName:        "task_name",
-		DisplayTaskName: "display_task_name",
-		DisplayTaskID:   "display_task_id",
-		RequestType:     "request_type",
+		Project:                "project",
+		Version:                "version",
+		Variant:                "variant",
+		TaskID:                 "task_id",
+		TaskName:               "task_name",
+		DisplayTaskName:        "display_task_name",
+		DisplayTaskID:          "display_task_id",
+		RequestType:            "request_type",
+		HistoricalDataIgnore:   []string{"ignoreMe"},
+		HistoricalDataDisabled: true,
 	}
 }
 
@@ -198,6 +200,8 @@ func validResults(id string) Results {
 				GroupID:         "group",
 				Status:          "status",
 				LogTestName:     "log_test_name",
+				LogURL:          "log_url",
+				RawLogURL:       "raw_log_url",
 				TaskCreated:     time.Now().Add(-time.Hour),
 				TestStarted:     time.Now().Add(-time.Minute),
 				TestEnded:       time.Now(),

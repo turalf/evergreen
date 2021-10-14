@@ -96,18 +96,7 @@ func (s *UserTestSuite) SetupTest() {
 			},
 		},
 		&DBUser{
-			Id:     "Test6",
-			APIKey: "api",
-			LoginCache: LoginCache{
-				Token:          "token6",
-				AccessToken:    "access6",
-				RefreshToken:   "refresh6",
-				TTL:            time.Now().Add(-time.Hour),
-				ReauthAttempts: 5,
-			},
-		},
-		&DBUser{
-			Id: "Test7",
+			Id: "Test6",
 			PubKeys: []PubKey{
 				{
 					Name:      "key1",
@@ -243,36 +232,36 @@ func (s *UserTestSuite) checkUserNotDestroyed(fromDB *DBUser, expected *DBUser) 
 }
 
 func (s *UserTestSuite) TestUpdatePublicKey() {
-	s.NoError(s.users[6].UpdatePublicKey("key1", "key1", "this is an amazing key"))
-	s.Len(s.users[6].PubKeys, 1)
-	s.Contains(s.users[6].PubKeys[0].Name, "key1")
-	s.Contains(s.users[6].PubKeys[0].Key, "this is an amazing key")
+	s.NoError(s.users[5].UpdatePublicKey("key1", "key1", "this is an amazing key"))
+	s.Len(s.users[5].PubKeys, 1)
+	s.Contains(s.users[5].PubKeys[0].Name, "key1")
+	s.Contains(s.users[5].PubKeys[0].Key, "this is an amazing key")
 
-	u, err := FindOne(ById(s.users[6].Id))
+	u, err := FindOne(ById(s.users[5].Id))
 	s.NoError(err)
-	s.checkUserNotDestroyed(u, s.users[6])
+	s.checkUserNotDestroyed(u, s.users[5])
 }
 
 func (s *UserTestSuite) TestUpdatePublicKeyWithSameKeyName() {
-	s.NoError(s.users[6].UpdatePublicKey("key1", "keyAmazing", "this is an amazing key"))
-	s.Len(s.users[6].PubKeys, 1)
-	s.Contains(s.users[6].PubKeys[0].Name, "keyAmazing")
-	s.Contains(s.users[6].PubKeys[0].Key, "this is an amazing key")
+	s.NoError(s.users[5].UpdatePublicKey("key1", "keyAmazing", "this is an amazing key"))
+	s.Len(s.users[5].PubKeys, 1)
+	s.Contains(s.users[5].PubKeys[0].Name, "keyAmazing")
+	s.Contains(s.users[5].PubKeys[0].Key, "this is an amazing key")
 
-	u, err := FindOne(ById(s.users[6].Id))
+	u, err := FindOne(ById(s.users[5].Id))
 	s.NoError(err)
-	s.checkUserNotDestroyed(u, s.users[6])
+	s.checkUserNotDestroyed(u, s.users[5])
 }
 
 func (s *UserTestSuite) TestUpdatePublicKeyThatDoesntExist() {
-	s.Error(s.users[6].UpdatePublicKey("non-existent-key", "keyAmazing", "this is an amazing key"))
-	s.Len(s.users[6].PubKeys, 1)
-	s.Contains(s.users[6].PubKeys[0].Name, "key1")
-	s.Contains(s.users[6].PubKeys[0].Key, "ssh-mock 12345")
+	s.Error(s.users[5].UpdatePublicKey("non-existent-key", "keyAmazing", "this is an amazing key"))
+	s.Len(s.users[5].PubKeys, 1)
+	s.Contains(s.users[5].PubKeys[0].Name, "key1")
+	s.Contains(s.users[5].PubKeys[0].Key, "ssh-mock 12345")
 
-	u, err := FindOne(ById(s.users[6].Id))
+	u, err := FindOne(ById(s.users[5].Id))
 	s.NoError(err)
-	s.checkUserNotDestroyed(u, s.users[6])
+	s.checkUserNotDestroyed(u, s.users[5])
 }
 
 func (s *UserTestSuite) TestDeletePublicKey() {
@@ -423,9 +412,9 @@ func (s *UserTestSuite) TestGetLoginCache() {
 	s.Nil(u)
 }
 
-func (s *UserTestSuite) TestClearLoginCacheSingleUser() {
+func (s *UserTestSuite) TestClearLoginCache() {
 	// Error on non-existent user
-	s.Error(ClearLoginCache(&DBUser{Id: "asdf"}, false))
+	s.Error(ClearLoginCache(&DBUser{Id: "asdf"}))
 
 	// Two valid users...
 	u1, valid, err := GetLoginCache("1234", time.Minute)
@@ -438,7 +427,7 @@ func (s *UserTestSuite) TestClearLoginCacheSingleUser() {
 	s.Require().Equal("Test4", u2.Username())
 
 	// One is cleared...
-	s.NoError(ClearLoginCache(u1, false))
+	s.NoError(ClearLoginCache(u1))
 	// and is no longer found
 	u1, valid, err = GetLoginCache("1234", time.Minute)
 	s.NoError(err)
@@ -452,9 +441,9 @@ func (s *UserTestSuite) TestClearLoginCacheSingleUser() {
 	s.Equal("Test4", u2.Username())
 }
 
-func (s *UserTestSuite) TestClearLoginCacheAllUsers() {
+func (s *UserTestSuite) TestClearAllLoginCaches() {
 	// Clear all users
-	s.NoError(ClearLoginCache(nil, true))
+	s.NoError(ClearAllLoginCaches())
 	// Sample user is no longer in cache
 	u, valid, err := GetLoginCache("1234", time.Minute)
 	s.NoError(err)
@@ -565,24 +554,24 @@ func (s *UserTestSuite) TestFindNeedsReauthorization() {
 		return len(left) == 0 && len(right) == 0
 	}
 
-	users, err := FindNeedsReauthorization(0, 100)
+	users, err := FindNeedsReauthorization(0)
 	s.NoError(err)
-	s.Len(users, 5)
-	s.True(containsUsers(users, "Test1", "Test2", "Test4", "Test5", "Test6"), "should find all logged in users")
+	s.Require().Len(users, 4)
+	s.True(containsUsers(users, "Test1", "Test2", "Test4", "Test5"), "should find all logged in users")
 	s.False(containsUsers(users, "Test3"), "should not find logged out users")
 
-	users, err = FindNeedsReauthorization(0, 1)
+	users, err = FindNeedsReauthorization(0)
 	s.NoError(err)
-	s.Len(users, 4)
+	s.Require().Len(users, 4)
 	s.True(containsUsers(users, "Test1", "Test2", "Test4", "Test5"), "should find logged in users who have not exceeded max reauth attempts")
 	s.False(containsUsers(users, "Test3", "Test6"), "should not find logged out users or users who have exceeded max reauth attempts")
 
-	users, err = FindNeedsReauthorization(30*time.Minute, 100)
+	users, err = FindNeedsReauthorization(30 * time.Minute)
 	s.NoError(err)
-	s.Len(users, 2)
-	s.True(containsUsers(users, "Test2", "Test6"), "should find logged in users who have exceeded the reauth limit")
+	s.Require().Len(users, 1)
+	s.True(containsUsers(users, "Test2"), "should find logged in users who have exceeded the reauth limit")
 
-	users, err = FindNeedsReauthorization(24*time.Hour, 1)
+	users, err = FindNeedsReauthorization(24 * time.Hour)
 	s.NoError(err)
 	s.Empty(users, "should not find users who have not exceeded the reauth limit")
 }
@@ -722,4 +711,68 @@ func TestGetOrCreateUser(t *testing.T) {
 			testCase(t)
 		})
 	}
+}
+
+func TestViewableProjects(t *testing.T) {
+	rm := evergreen.GetEnvironment().RoleManager()
+	assert.NoError(t, db.ClearCollections(evergreen.RoleCollection, evergreen.ScopeCollection, Collection))
+	editScope := gimlet.Scope{
+		ID:        "edit_scope",
+		Resources: []string{"edit1", "edit2"},
+		Type:      evergreen.ProjectResourceType,
+	}
+	assert.NoError(t, rm.AddScope(editScope))
+	editPermissions := gimlet.Permissions{
+		evergreen.PermissionProjectSettings: evergreen.ProjectSettingsEdit.Value,
+	}
+	editRole := gimlet.Role{
+		ID:          "edit_role",
+		Scope:       editScope.ID,
+		Permissions: editPermissions,
+	}
+	assert.NoError(t, rm.UpdateRole(editRole))
+	viewScope := gimlet.Scope{
+		ID:        "view_scope",
+		Resources: []string{"view1"},
+		Type:      evergreen.ProjectResourceType,
+	}
+	assert.NoError(t, rm.AddScope(viewScope))
+	viewPermissions := gimlet.Permissions{
+		evergreen.PermissionProjectSettings: evergreen.ProjectSettingsView.Value,
+	}
+	viewRole := gimlet.Role{
+		ID:          "view_role",
+		Scope:       viewScope.ID,
+		Permissions: viewPermissions,
+	}
+	assert.NoError(t, rm.UpdateRole(viewRole))
+	otherScope := gimlet.Scope{
+		ID:        "others_scope",
+		Resources: []string{"other"},
+		Type:      evergreen.ProjectResourceType,
+	}
+	assert.NoError(t, rm.AddScope(otherScope))
+
+	otherRole := gimlet.Role{
+		ID:          "other_role",
+		Scope:       otherScope.ID,
+		Permissions: gimlet.Permissions{evergreen.PermissionProjectSettings: evergreen.ProjectSettingsNone.Value},
+	}
+	assert.NoError(t, rm.UpdateRole(otherRole))
+	myUser := DBUser{
+		Id: "me",
+	}
+	assert.NoError(t, myUser.Insert())
+	assert.NoError(t, myUser.AddRole(viewRole.ID))
+	assert.NoError(t, myUser.AddRole(editRole.ID))
+	assert.NoError(t, myUser.AddRole(otherRole.ID))
+
+	// assert that viewable projects contains the edit projects and the view projects
+	projects, err := myUser.GetViewableProjects()
+	assert.NoError(t, err)
+	assert.Len(t, projects, 3)
+	assert.Contains(t, projects, "edit1")
+	assert.Contains(t, projects, "edit2")
+	assert.Contains(t, projects, "view1")
+	assert.NotContains(t, projects, "other")
 }

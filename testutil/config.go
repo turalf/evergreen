@@ -105,6 +105,7 @@ func MockConfig() *evergreen.Settings {
 			GroupPruneFrequencyMinutes:            60,
 			GroupTTLMinutes:                       70,
 			LockTimeoutMinutes:                    7,
+			SampleSize:                            500,
 			Retry: evergreen.AmboyRetryConfig{
 				NumWorkers:                          8,
 				MaxCapacity:                         100,
@@ -132,6 +133,7 @@ func MockConfig() *evergreen.Settings {
 				ClientID:           "id",
 				ClientSecret:       "secret",
 				Issuer:             "issuer",
+				Scopes:             []string{"openid", "email", "profile", "offline_access"},
 				UserGroup:          "group",
 				ExpireAfterMinutes: 60,
 			},
@@ -216,7 +218,10 @@ func MockConfig() *evergreen.Settings {
 				AdminEmail: []string{"email"},
 			},
 		},
-		Plugins:   map[string]map[string]interface{}{"k4": {"k5": "v5"}},
+		Plugins: map[string]map[string]interface{}{"k4": {"k5": "v5"}},
+		PodInit: evergreen.PodInitConfig{
+			S3BaseURL: "s3_base_url",
+		},
 		PprofPort: "port",
 		Providers: evergreen.CloudProviders{
 			AWS: evergreen.AWSConfig{
@@ -243,6 +248,28 @@ func MockConfig() *evergreen.Settings {
 					Key:    "task_sync_read_key",
 					Secret: "task_sync_read_secret",
 					Bucket: "task_sync_bucket",
+				},
+				Pod: evergreen.AWSPodConfig{
+					Role:   "role",
+					Region: "region",
+					ECS: evergreen.ECSConfig{
+						TaskDefinitionPrefix: "ecs_prefix",
+						TaskRole:             "task_role",
+						ExecutionRole:        "execution_role",
+						AWSVPC: evergreen.AWSVPCConfig{
+							Subnets:        []string{"subnet-12345"},
+							SecurityGroups: []string{"sg-12345"},
+						},
+						Clusters: []evergreen.ECSClusterConfig{
+							{
+								Name:     "cluster_name",
+								Platform: evergreen.ECSClusterPlatformLinux,
+							},
+						},
+					},
+					SecretsManager: evergreen.SecretsManagerConfig{
+						SecretPrefix: "secret_prefix",
+					},
 				},
 			},
 			Docker: evergreen.DockerConfig{
@@ -278,14 +305,17 @@ func MockConfig() *evergreen.Settings {
 			TaskFinder: "legacy",
 		},
 		ServiceFlags: evergreen.ServiceFlags{
+			PluginAdminPageDisabled:       false,
 			TaskDispatchDisabled:          true,
 			HostInitDisabled:              true,
+			PodInitDisabled:               true,
 			S3BinaryDownloadsDisabled:     true,
 			MonitorDisabled:               true,
 			AlertsDisabled:                true,
 			AgentStartDisabled:            true,
 			RepotrackerDisabled:           true,
 			SchedulerDisabled:             true,
+			CheckBlockedTasksDisabled:     true,
 			GithubPRTestingDisabled:       true,
 			CLIUpdatesDisabled:            true,
 			EventProcessingDisabled:       true,
@@ -296,7 +326,6 @@ func MockConfig() *evergreen.Settings {
 			GithubStatusAPIDisabled:       true,
 			BackgroundReauthDisabled:      true,
 			AmboyRemoteManagementDisabled: true,
-			AmboyRetriesDisabled:          true,
 		},
 		SSHKeyDirectory: "/ssh_key_directory",
 		SSHKeyPairs: []evergreen.SSHKeyPair{

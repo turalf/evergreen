@@ -3,13 +3,16 @@ package event
 import (
 	"time"
 
+	"github.com/evergreen-ci/evergreen"
 	"github.com/mongodb/grip"
 	"github.com/mongodb/grip/message"
 )
 
 func init() {
 	registry.AddType(ResourceTypeTask, taskEventDataFactory)
+	registry.AllowSubscription(ResourceTypeTask, TaskStarted)
 	registry.AllowSubscription(ResourceTypeTask, TaskFinished)
+	registry.AllowSubscription(ResourceTypeTask, TaskBlocked)
 }
 
 const (
@@ -17,20 +20,21 @@ const (
 	ResourceTypeTask = "TASK"
 
 	// event types
-	TaskCreated                 = "TASK_CREATED"
-	TaskDispatched              = "TASK_DISPATCHED"
-	TaskUndispatched            = "TASK_UNDISPATCHED"
-	TaskStarted                 = "TASK_STARTED"
-	TaskFinished                = "TASK_FINISHED"
-	TaskRestarted               = "TASK_RESTARTED"
-	TaskActivated               = "TASK_ACTIVATED"
-	TaskDeactivated             = "TASK_DEACTIVATED"
-	TaskAbortRequest            = "TASK_ABORT_REQUEST"
-	TaskScheduled               = "TASK_SCHEDULED"
-	TaskPriorityChanged         = "TASK_PRIORITY_CHANGED"
-	TaskJiraAlertCreated        = "TASK_JIRA_ALERT_CREATED"
-	TaskDepdendenciesOverridden = "TASK_DEPENDENCIES_OVERRIDDEN"
-	MergeTaskUnscheduled        = "MERGE_TASK_UNSCHEDULED"
+	TaskCreated                = "TASK_CREATED"
+	TaskDispatched             = "TASK_DISPATCHED"
+	TaskUndispatched           = "TASK_UNDISPATCHED"
+	TaskStarted                = "TASK_STARTED"
+	TaskFinished               = "TASK_FINISHED"
+	TaskBlocked                = "TASK_BLOCKED"
+	TaskRestarted              = "TASK_RESTARTED"
+	TaskActivated              = "TASK_ACTIVATED"
+	TaskDeactivated            = "TASK_DEACTIVATED"
+	TaskAbortRequest           = "TASK_ABORT_REQUEST"
+	TaskScheduled              = "TASK_SCHEDULED"
+	TaskPriorityChanged        = "TASK_PRIORITY_CHANGED"
+	TaskJiraAlertCreated       = "TASK_JIRA_ALERT_CREATED"
+	TaskDependenciesOverridden = "TASK_DEPENDENCIES_OVERRIDDEN"
+	MergeTaskUnscheduled       = "MERGE_TASK_UNSCHEDULED"
 )
 
 // implements Data
@@ -112,7 +116,7 @@ func LogTaskUndispatched(taskId string, execution int, hostId string) {
 }
 
 func LogTaskStarted(taskId string, execution int) {
-	logTaskEvent(taskId, TaskStarted, TaskEventData{Execution: execution})
+	logTaskEvent(taskId, TaskStarted, TaskEventData{Execution: execution, Status: evergreen.TaskStarted})
 }
 
 func LogTaskFinished(taskId string, execution int, hostId, status string) {
@@ -124,6 +128,10 @@ func LogTaskFinished(taskId string, execution int, hostId, status string) {
 
 func LogTaskRestarted(taskId string, execution int, userId string) {
 	logTaskEvent(taskId, TaskRestarted, TaskEventData{Execution: execution, UserId: userId})
+}
+
+func LogTaskBlocked(taskId string, execution int) {
+	logTaskEvent(taskId, TaskBlocked, TaskEventData{Execution: execution})
 }
 
 func LogTaskActivated(taskId string, execution int, userId string) {
@@ -150,7 +158,7 @@ func LogTaskScheduled(taskId string, execution int, scheduledTime time.Time) {
 }
 
 func LogTaskDependenciesOverridden(taskId string, execution int, userID string) {
-	logTaskEvent(taskId, TaskDepdendenciesOverridden,
+	logTaskEvent(taskId, TaskDependenciesOverridden,
 		TaskEventData{Execution: execution, UserId: userID})
 }
 

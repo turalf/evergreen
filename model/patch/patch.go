@@ -19,6 +19,8 @@ import (
 	"github.com/google/go-github/github"
 	"github.com/mongodb/anser/bsonutil"
 	adb "github.com/mongodb/anser/db"
+	"github.com/mongodb/grip"
+	"github.com/mongodb/grip/message"
 	"github.com/pkg/errors"
 	"go.mongodb.org/mongo-driver/bson"
 	mgobson "gopkg.in/mgo.v2/bson"
@@ -138,6 +140,7 @@ type GitMetadata struct {
 type Patch struct {
 	Id              mgobson.ObjectId       `bson:"_id,omitempty"`
 	Description     string                 `bson:"desc"`
+	Path            string                 `bson:"path,omitempty"`
 	Project         string                 `bson:"branch"`
 	Githash         string                 `bson:"githash"`
 	PatchNumber     int                    `bson:"patch_number"`
@@ -511,21 +514,35 @@ func TryMarkStarted(versionId string, startTime time.Time) error {
 	return UpdateOne(filter, update)
 }
 
-// TryMarkFinished attempts to mark a patch of a given version as finished.
-func TryMarkFinished(versionId string, finishTime time.Time, status string) error {
-	filter := bson.M{VersionKey: versionId}
-	update := bson.M{
-		"$set": bson.M{
-			FinishTimeKey: finishTime,
-			StatusKey:     status,
-		},
-	}
-	return UpdateOne(filter, update)
-}
-
 // Insert inserts the patch into the db, returning any errors that occur
 func (p *Patch) Insert() error {
 	return db.Insert(Collection, p)
+}
+
+func (p *Patch) UpdateStatus(newStatus string) error {
+	if p.Status == newStatus {
+		return nil
+	}
+
+	p.Status = newStatus
+	update := bson.M{
+		"$set": bson.M{
+			StatusKey: newStatus,
+		},
+	}
+	return UpdateOne(bson.M{IdKey: p.Id}, update)
+}
+
+func (p *Patch) MarkFinished(status string, finishTime time.Time) error {
+	p.Status = status
+	p.FinishTime = finishTime
+	return UpdateOne(
+		bson.M{IdKey: p.Id},
+		bson.M{"$set": bson.M{
+			FinishTimeKey: finishTime,
+			StatusKey:     status,
+		}},
+	)
 }
 
 // ConfigChanged looks through the parts of the patch and returns true if the
@@ -546,16 +563,39 @@ func (p *Patch) ConfigChanged(remotePath string) bool {
 }
 
 // SetActivated sets the patch to activated in the db
-func (p *Patch) SetActivated(versionId string) error {
+func (p *Patch) SetActivated(ctx context.Context, versionId string) error {
 	p.Version = versionId
 	p.Activated = true
-	return UpdateOne(
+	_, err := evergreen.GetEnvironment().DB().Collection(Collection).UpdateOne(ctx,
 		bson.M{IdKey: p.Id},
 		bson.M{
 			"$set": bson.M{
 				ActivatedKey: true,
 				VersionKey:   versionId,
 			},
+		},
+	)
+	return err
+}
+
+// SetTriggerAliases appends the names of invoked trigger aliases to the DB
+func (p *Patch) SetTriggerAliases() error {
+	triggersKey := bsonutil.GetDottedKeyName(TriggersKey, TriggerInfoAliasesKey)
+	return UpdateOne(
+		bson.M{IdKey: p.Id},
+		bson.M{
+			"$addToSet": bson.M{triggersKey: bson.M{"$each": p.Triggers.Aliases}},
+		},
+	)
+}
+
+// SetChildPatches appends the IDs of downstream patches to the db
+func (p *Patch) SetChildPatches() error {
+	triggersKey := bsonutil.GetDottedKeyName(TriggersKey, TriggerInfoChildPatchesKey)
+	return UpdateOne(
+		bson.M{IdKey: p.Id},
+		bson.M{
+			"$addToSet": bson.M{triggersKey: bson.M{"$each": p.Triggers.ChildPatches}},
 		},
 	)
 }
@@ -668,23 +708,61 @@ func (p *Patch) IsParent() bool {
 	return len(p.Triggers.ChildPatches) > 0
 }
 
-func (p *Patch) SetParametersFromParent() error {
+func (p *Patch) GetPatchIndex(parentPatch *Patch) (int, error) {
+	if !p.IsChild() {
+		return -1, nil
+	}
+	if parentPatch == nil {
+		return -1, errors.New(fmt.Sprintf("parent patch does not exist"))
+	}
+	siblings := parentPatch.Triggers.ChildPatches
+
+	for index, patch := range siblings {
+		if p.Id.Hex() == patch {
+			return index, nil
+		}
+	}
+	return -1, nil
+}
+
+func (p *Patch) GetPatchFamily() ([]string, *Patch, error) {
+	var childrenOrSiblings []string
+	var parentPatch *Patch
+	var err error
+	if p.IsParent() {
+		childrenOrSiblings = p.Triggers.ChildPatches
+	}
+	if p.IsChild() {
+		parentPatchId := p.Triggers.ParentPatch
+		parentPatch, err = FindOneId(parentPatchId)
+		if err != nil {
+			return nil, nil, errors.Wrap(err, "can't get parent patch")
+		}
+		if parentPatch == nil {
+			return nil, nil, errors.Errorf(fmt.Sprintf("parent patch '%s' does not exist", parentPatchId))
+		}
+		childrenOrSiblings = parentPatch.Triggers.ChildPatches
+	}
+	return childrenOrSiblings, parentPatch, nil
+}
+
+func (p *Patch) SetParametersFromParent() (*Patch, error) {
 	parentPatchId := p.Triggers.ParentPatch
 	parentPatch, err := FindOneId(parentPatchId)
 	if err != nil {
-		return errors.Wrap(err, "can't get parent patch")
+		return nil, errors.Wrap(err, "can't get parent patch")
 	}
 	if parentPatch == nil {
-		return errors.Errorf(fmt.Sprintf("parent patch '%s' does not exist", parentPatchId))
+		return nil, errors.Errorf(fmt.Sprintf("parent patch '%s' does not exist", parentPatchId))
 	}
 
 	if downstreamParams := parentPatch.Triggers.DownstreamParameters; len(downstreamParams) > 0 {
 		err = p.SetParameters(downstreamParams)
 		if err != nil {
-			return errors.Wrap(err, "error setting parameters")
+			return nil, errors.Wrap(err, "error setting parameters")
 		}
 	}
-	return nil
+	return parentPatch, nil
 }
 
 func (p *Patch) GetRequester() string {
@@ -804,6 +882,10 @@ func MakeMergePatchPatches(existingPatch *Patch, commitMessage string) ([]Module
 		if err != nil {
 			return nil, errors.Wrap(err, "can't fetch patch contents")
 		}
+		if IsMailboxDiff(diff) {
+			newModulePatches = append(newModulePatches, modulePatch)
+			continue
+		}
 		mboxPatch, err := addMetadataToDiff(diff, commitMessage, time.Now(), *existingPatch.GitInfo)
 		if err != nil {
 			return nil, errors.Wrap(err, "can't convert diff to mbox format")
@@ -821,6 +903,7 @@ func MakeMergePatchPatches(existingPatch *Patch, commitMessage string) ([]Module
 				Summary:        modulePatch.PatchSet.Summary,
 			},
 		})
+
 	}
 
 	return newModulePatches, nil
@@ -918,4 +1001,44 @@ func (p PatchesByCreateTime) Less(i, j int) bool {
 
 func (p PatchesByCreateTime) Swap(i, j int) {
 	p[i], p[j] = p[j], p[i]
+}
+
+// GetCollectiveStatus answers the question of what the patch status should be
+// when the patch status and the status of it's children are different
+func GetCollectiveStatus(statuses []string) string {
+	hasCreated := false
+	hasFailure := false
+	hasSuccess := false
+
+	for _, s := range statuses {
+		switch s {
+		case evergreen.PatchStarted:
+			return evergreen.PatchStarted
+		case evergreen.PatchCreated:
+			hasCreated = true
+		case evergreen.PatchFailed:
+			hasFailure = true
+		case evergreen.PatchSucceeded:
+			hasSuccess = true
+		}
+	}
+
+	if !(hasCreated || hasFailure || hasSuccess) {
+		grip.Critical(message.Fields{
+			"message":  "An unknown patch status was found",
+			"cause":    "Programmer error: new statuses should be added to patch.getCollectiveStatus().",
+			"statuses": statuses,
+		})
+	}
+
+	if hasCreated && (hasFailure || hasSuccess) {
+		return evergreen.PatchStarted
+	} else if hasCreated {
+		return evergreen.PatchCreated
+	} else if hasFailure {
+		return evergreen.PatchFailed
+	} else if hasSuccess {
+		return evergreen.PatchSucceeded
+	}
+	return evergreen.PatchCreated
 }

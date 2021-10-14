@@ -14,6 +14,7 @@ import (
 	"github.com/evergreen-ci/evergreen"
 	"github.com/evergreen-ci/evergreen/apimodels"
 	"github.com/evergreen-ci/evergreen/model/host"
+	"github.com/evergreen-ci/evergreen/rest/client"
 	restModel "github.com/evergreen-ci/evergreen/rest/model"
 	"github.com/evergreen-ci/utility"
 	"github.com/google/shlex"
@@ -80,6 +81,7 @@ func hostCreate() cli.Command {
 				Usage: "name of a json or yaml file containing the spawn host params",
 			},
 		},
+		Before: requireStringFlag(keyFlagName),
 		Action: func(c *cli.Context) error {
 			confPath := c.Parent().Parent().String(confFlagName)
 			distro := c.String(distroFlagName)
@@ -173,6 +175,8 @@ func hostModify() cli.Command {
 		noExpireFlagName     = "no-expire"
 		expireFlagName       = "expire"
 		extendFlagName       = "extend"
+		addSSHKeyFlag        = "add-ssh-key"
+		addSSHKeyNameFlag    = "add-ssh-key-name"
 	)
 
 	return cli.Command{
@@ -207,13 +211,22 @@ func hostModify() cli.Command {
 				Name:  expireFlagName,
 				Usage: "make host expire like a normal spawn host, in 24 hours",
 			},
+			cli.StringFlag{
+				Name:  addSSHKeyFlag,
+				Usage: "add public key from local file `PATH` to the host's authorized_keys",
+			},
+			cli.StringFlag{
+				Name:  addSSHKeyNameFlag,
+				Usage: "add user defined public key named `KEY_NAME` to the host's authorized_keys",
+			},
 		)),
 		Before: mergeBeforeFuncs(
 			setPlainLogger,
 			requireHostFlag,
-			requireAtLeastOneFlag(addTagFlagName, deleteTagFlagName, instanceTypeFlagName, expireFlagName, noExpireFlagName, extendFlagName),
+			requireAtLeastOneFlag(addTagFlagName, deleteTagFlagName, instanceTypeFlagName, expireFlagName, noExpireFlagName, extendFlagName, addSSHKeyFlag, addSSHKeyNameFlag),
 			mutuallyExclusiveArgs(false, noExpireFlagName, extendFlagName),
 			mutuallyExclusiveArgs(false, noExpireFlagName, expireFlagName),
+			mutuallyExclusiveArgs(false, addSSHKeyFlag, addSSHKeyNameFlag),
 		),
 		Action: func(c *cli.Context) error {
 			confPath := c.Parent().Parent().String(confFlagName)
@@ -226,6 +239,8 @@ func hostModify() cli.Command {
 			expire := c.Bool(expireFlagName)
 			extension := c.Int(extendFlagName)
 			subscriptionType := c.String(subscriptionTypeFlag)
+			publicKeyFile := c.String(addSSHKeyFlag)
+			publicKeyName := c.String(addSSHKeyNameFlag)
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -242,6 +257,11 @@ func hostModify() cli.Command {
 				return errors.Wrap(err, "problem generating tags to add")
 			}
 
+			publicKey, err := getPublicKey(ctx, client, publicKeyFile, publicKeyName)
+			if err != nil {
+				return errors.Wrap(err, "public key failed validation")
+			}
+
 			hostChanges := host.HostModifyOptions{
 				AddInstanceTags:    addTags,
 				DeleteInstanceTags: deleteTagSlice,
@@ -249,6 +269,7 @@ func hostModify() cli.Command {
 				AddHours:           time.Duration(extension) * time.Hour,
 				SubscriptionType:   subscriptionType,
 				NewName:            displayName,
+				AddKey:             publicKey,
 			}
 
 			if noExpire {
@@ -270,6 +291,46 @@ func hostModify() cli.Command {
 			return nil
 		},
 	}
+}
+
+func getPublicKey(ctx context.Context, client client.Communicator, keyFile, keyName string) (string, error) {
+	if keyFile != "" {
+		return readKeyFromFile(keyFile)
+	}
+
+	if keyName != "" {
+		return getUserKeyByName(ctx, client, keyName)
+	}
+
+	return "", nil
+}
+
+func readKeyFromFile(keyFile string) (string, error) {
+	if !utility.FileExists(keyFile) {
+		return "", errors.Errorf("key file '%s' does not exist", keyFile)
+	}
+
+	publicKeyBytes, err := os.ReadFile(keyFile)
+	if err != nil {
+		return "", errors.Wrapf(err, "reading public key from file")
+	}
+
+	return string(publicKeyBytes), nil
+}
+
+func getUserKeyByName(ctx context.Context, client client.Communicator, keyName string) (string, error) {
+	userKeys, err := client.GetCurrentUsersKeys(ctx)
+	if err != nil {
+		return "", errors.New("problem retrieving user keys")
+	}
+
+	for _, pubKey := range userKeys {
+		if utility.FromStringPtr(pubKey.Name) == keyName {
+			return utility.FromStringPtr(pubKey.Key), nil
+		}
+	}
+
+	return "", errors.Errorf("key name '%s' is not defined for the authenticated user", keyName)
 }
 
 func hostConfigure() cli.Command {
@@ -366,11 +427,12 @@ func hostConfigure() cli.Command {
 			}
 
 			grip.Info(message.Fields{
-				"operation": "setup project",
-				"directory": directory,
-				"commands":  len(cmds),
-				"project":   projectRef.Id,
-				"dry-run":   dryRun,
+				"operation":          "setup project",
+				"directory":          directory,
+				"commands":           len(cmds),
+				"project":            projectRef.Id,
+				"project_identifier": projectRef.Identifier,
+				"dry-run":            dryRun,
 			})
 
 			for idx, cmd := range cmds {
@@ -381,6 +443,7 @@ func hostConfigure() cli.Command {
 				}
 
 				if err := cmd.Run(ctx); err != nil {
+					grip.Infof("You may need to accept an email invite to receive access to repo '%s/%s'", projectRef.Owner, projectRef.Repo)
 					return errors.Wrapf(err, "problem running cmd %d of %d to provision %s", idx+1, len(cmds), projectRef.Id)
 				}
 			}
@@ -512,6 +575,7 @@ func hostSSH() cli.Command {
 		),
 		Before: mergeBeforeFuncs(setPlainLogger, requireHostFlag),
 		Action: func(c *cli.Context) error {
+			grip.Info("Note: User must be on the VPN to gain access to the host.")
 			confPath := c.Parent().Parent().String(confFlagName)
 			hostID := c.String(hostFlagName)
 			key := c.String(identityFlagName)
@@ -1014,7 +1078,7 @@ func hostRunCommand() cli.Command {
 	return cli.Command{
 		Name:  "exec",
 		Usage: "run a bash shell script on host(s) and print the output",
-		Flags: mergeFlagSlices(addHostFlag(), addYesFlag(
+		Flags: mergeFlagSlices(addHostFlag(), addSkipConfirmFlag(
 			cli.StringFlag{
 				Name:  createdBeforeFlagName,
 				Usage: "only run on hosts created before `TIME` in RFC3339 format",
@@ -1060,7 +1124,7 @@ func hostRunCommand() cli.Command {
 			mine := c.Bool(mineFlagName)
 			script := c.String(scriptFlagName)
 			path := c.String(pathFlagName)
-			skipConfirm := c.Bool(yesFlagName)
+			skipConfirm := c.Bool(skipConfirmFlagName)
 			batchSize := c.Int(batchSizeFlagName)
 
 			ctx, cancel := context.WithCancel(context.Background())
@@ -1367,6 +1431,55 @@ Examples:
 				return errors.Wrap(err, "could not build rsync command")
 			}
 			return cmd.Run(ctx)
+		},
+	}
+}
+
+func hostFindBy() cli.Command {
+	const (
+		ipAddressFlagName = "ip-address"
+	)
+	return cli.Command{
+		Name:  "get-host",
+		Usage: "get link to existing hosts",
+		Flags: addHostFlag(
+			cli.StringFlag{
+				Name:  joinFlagNames(ipAddressFlagName, "ip"),
+				Usage: "ip address used to find host",
+			},
+		),
+		Before: requireAtLeastOneFlag(ipAddressFlagName),
+		Action: func(c *cli.Context) error {
+			confPath := c.Parent().Parent().String(confFlagName)
+			ipAddress := c.String(ipAddressFlagName)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			conf, err := NewClientSettings(confPath)
+			if err != nil {
+				return errors.Wrap(err, "problem loading configuration")
+			}
+			client := conf.getRestCommunicator(ctx)
+			defer client.Close()
+
+			host, err := client.FindHostByIpAddress(ctx, ipAddress)
+			if err != nil {
+				return errors.Wrapf(err, "failed to fetch host with ip address '%s'", ipAddress)
+			}
+			if host == nil {
+				return errors.Errorf("Host with ip address '%s' not found", ipAddress)
+			}
+
+			hostId := utility.FromStringPtr(host.Id)
+			hostUser := utility.FromStringPtr(host.StartedBy)
+			link := fmt.Sprintf("%s/host/%s", conf.UIServerHost, hostId)
+			fmt.Printf(`
+	     ID : %s
+	   Link : %s
+	   User : %s
+`, hostId, link, hostUser)
+			return nil
 		},
 	}
 }

@@ -57,12 +57,13 @@ type Mock struct {
 
 	CedarGRPCConn *grpc.ClientConn
 
-	AttachedFiles    map[string][]*artifact.File
-	LogID            string
-	LocalTestResults *task.LocalTestResults
-	HasCedarResults  bool
-	TestLogs         []*serviceModel.TestLog
-	TestLogCount     int
+	AttachedFiles      map[string][]*artifact.File
+	LogID              string
+	LocalTestResults   *task.LocalTestResults
+	HasCedarResults    bool
+	CedarResultsFailed bool
+	TestLogs           []*serviceModel.TestLog
+	TestLogCount       int
 
 	// data collected by mocked methods
 	logMessages      map[string][]apimodels.LogMessage
@@ -110,11 +111,6 @@ func (c *Mock) UpdateLastMessageTime() {
 func (c *Mock) SetTimeoutStart(timeoutStart time.Duration) { c.timeoutStart = timeoutStart }
 func (c *Mock) SetTimeoutMax(timeoutMax time.Duration)     { c.timeoutMax = timeoutMax }
 func (c *Mock) SetMaxAttempts(attempts int)                { c.maxAttempts = attempts }
-
-func (c *Mock) SetHostID(hostID string)         { c.hostID = hostID }
-func (c *Mock) SetHostSecret(hostSecret string) { c.hostSecret = hostSecret }
-func (c *Mock) GetHostID() string               { return c.hostID }
-func (c *Mock) GetHostSecret() string           { return c.hostSecret }
 
 func (c *Mock) GetAgentSetupData(ctx context.Context) (*apimodels.AgentSetupData, error) {
 	return &apimodels.AgentSetupData{}, nil
@@ -192,7 +188,7 @@ func (c *Mock) GetProject(ctx context.Context, td TaskData) (*serviceModel.Proje
 		grip.Error(err)
 	}
 	proj := &serviceModel.Project{}
-	_, err = serviceModel.LoadProjectInto(data, "", proj)
+	_, err = serviceModel.LoadProjectInto(ctx, data, nil, "", proj)
 	return proj, err
 }
 
@@ -264,7 +260,6 @@ func (c *Mock) GetCedarConfig(ctx context.Context) (*apimodels.CedarConfig, erro
 		BaseURL:  "base_url",
 		RPCPort:  "1000",
 		Username: "user",
-		Password: "password",
 		APIKey:   "api_key",
 	}, nil
 }
@@ -272,7 +267,7 @@ func (c *Mock) GetCedarConfig(ctx context.Context) (*apimodels.CedarConfig, erro
 // GetCedarGRPCConn returns gRPC connection if it is set.
 func (c *Mock) GetCedarGRPCConn(ctx context.Context) (*grpc.ClientConn, error) {
 	if c.CedarGRPCConn == nil {
-		return nil, errors.New("Cedar gRPC connection is unset")
+		return nil, nil
 	}
 	return c.CedarGRPCConn, nil
 }
@@ -387,8 +382,16 @@ func (c *Mock) SendTestResults(ctx context.Context, td TaskData, results *task.L
 }
 
 // SetHasCedarResults sets the HasCedarResults flag in the task.
-func (c *Mock) SetHasCedarResults(ctx context.Context, td TaskData) error {
+func (c *Mock) SetHasCedarResults(ctx context.Context, td TaskData, failed bool) error {
 	c.HasCedarResults = true
+	if failed {
+		c.CedarResultsFailed = true
+	}
+	return nil
+}
+
+// DisableHost signals to the app server that the host should be disabled.
+func (c *Mock) DisableHost(ctx context.Context, hostID string, info apimodels.DisableInfo) error {
 	return nil
 }
 
@@ -403,7 +406,7 @@ func (c *Mock) AttachFiles(ctx context.Context, td TaskData, taskFiles []*artifa
 	return nil
 }
 
-func (c *Mock) SetDownstreamParams(ctx context.Context, downstreamParams []patchmodel.Parameter, taskId string) error {
+func (c *Mock) SetDownstreamParams(ctx context.Context, downstreamParams []patchmodel.Parameter, taskData TaskData) error {
 	c.DownstreamParams = downstreamParams
 	return nil
 }

@@ -16,7 +16,6 @@ import (
 	"github.com/evergreen-ci/evergreen/model/distro"
 	"github.com/evergreen-ci/evergreen/model/host"
 	"github.com/evergreen-ci/evergreen/rest/model"
-	"github.com/evergreen-ci/evergreen/util"
 	"github.com/evergreen-ci/utility"
 	"github.com/mongodb/grip"
 	"github.com/mongodb/grip/message"
@@ -189,7 +188,7 @@ const (
 )
 
 const (
-	checkSuccessRetries    = 10
+	checkSuccessAttempts   = 10
 	checkSuccessInitPeriod = 2 * time.Second
 )
 
@@ -302,7 +301,14 @@ func (m *ec2Manager) spawnOnDemandHost(ctx context.Context, h *host.Host, ec2Set
 		ec2Settings.UserData = expanded
 	}
 
-	userData, err := makeUserData(ctx, m.env, h, ec2Settings.UserData, ec2Settings.MergeUserDataParts)
+	settings := *m.settings
+	// Use the latest service flags instead of those cached in the environment.
+	flags, err := evergreen.GetServiceFlags()
+	if err != nil {
+		return errors.Wrap(err, "getting service flags")
+	}
+	settings.ServiceFlags = *flags
+	userData, err := makeUserData(ctx, &settings, h, ec2Settings.UserData, ec2Settings.MergeUserDataParts)
 	if err != nil {
 		return errors.Wrap(err, "could not make user data")
 	}
@@ -484,7 +490,14 @@ func (m *ec2Manager) spawnSpotHost(ctx context.Context, h *host.Host, ec2Setting
 		ec2Settings.UserData = expanded
 	}
 
-	userData, err := makeUserData(ctx, m.env, h, ec2Settings.UserData, ec2Settings.MergeUserDataParts)
+	settings := *m.settings
+	// Use the latest service flags instead of those cached in the environment.
+	flags, err := evergreen.GetServiceFlags()
+	if err != nil {
+		return errors.Wrap(err, "getting service flags")
+	}
+	settings.ServiceFlags = *flags
+	userData, err := makeUserData(ctx, &settings, h, ec2Settings.UserData, ec2Settings.MergeUserDataParts)
 	if err != nil {
 		return errors.Wrap(err, "could not make user data")
 	}
@@ -817,6 +830,13 @@ func (m *ec2Manager) ModifyHost(ctx context.Context, h *host.Host, opts host.Hos
 			catcher.Wrapf(err, "attaching volume '%s' to host '%s'", volume.ID, h.Id)
 		}
 	}
+
+	if opts.AddKey != "" {
+		if err := h.AddPubKey(ctx, opts.AddKey); err != nil {
+			catcher.Wrapf(err, "can't add key to host '%s'", h.Id)
+		}
+	}
+
 	return catcher.Resolve()
 }
 
@@ -1141,7 +1161,7 @@ func (m *ec2Manager) StopInstance(ctx context.Context, h *host.Host, user string
 	}
 
 	// Check whether instance stopped
-	err = util.Retry(
+	err = utility.Retry(
 		ctx,
 		func() (bool, error) {
 			var instance *ec2.Instance
@@ -1153,7 +1173,10 @@ func (m *ec2Manager) StopInstance(ctx context.Context, h *host.Host, user string
 				return false, nil
 			}
 			return true, errors.New("host is not stopped")
-		}, checkSuccessRetries, checkSuccessInitPeriod, 0)
+		}, utility.RetryOptions{
+			MaxAttempts: checkSuccessAttempts,
+			MinDelay:    checkSuccessInitPeriod,
+		})
 
 	if err != nil {
 		if err2 := h.SetStatus(prevStatus, user, ""); err2 != nil {
@@ -1194,8 +1217,9 @@ func (m *ec2Manager) StartInstance(ctx context.Context, h *host.Host, user strin
 	}
 
 	var instance *ec2.Instance
+
 	// Check whether instance is running
-	err = util.Retry(
+	err = utility.Retry(
 		ctx,
 		func() (bool, error) {
 			instance, err = m.client.GetInstanceInfo(ctx, h.Id)
@@ -1206,7 +1230,10 @@ func (m *ec2Manager) StartInstance(ctx context.Context, h *host.Host, user strin
 				return false, nil
 			}
 			return true, errors.New("host is not started")
-		}, checkSuccessRetries, checkSuccessInitPeriod, 0)
+		}, utility.RetryOptions{
+			MaxAttempts: checkSuccessAttempts,
+			MinDelay:    checkSuccessInitPeriod,
+		})
 
 	if err != nil {
 		return errors.Wrap(err, "error checking if spawnhost started")

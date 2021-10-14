@@ -29,8 +29,9 @@ func TestSendTestResults(t *testing.T) {
 				TestFile:        "test",
 				DisplayTestName: "display",
 				GroupID:         "group",
-				Status:          "status",
+				Status:          "pass",
 				URL:             "https://url.com",
+				URLRaw:          "https://rawurl.com",
 				LogTestName:     "log_test_name",
 				LineNum:         123,
 				StartTime:       float64(time.Now().Add(-time.Hour).Unix()),
@@ -50,7 +51,10 @@ func TestSendTestResults(t *testing.T) {
 			Execution:    5,
 			Requester:    evergreen.GithubPRRequester,
 		},
-		ProjectRef: &model.ProjectRef{},
+		ProjectRef: &model.ProjectRef{
+			FilesIgnoredFromCache: []string{"ignoreMe"},
+			DisabledStatsCache:    utility.ToBoolPtr(true),
+		},
 	}
 	td := client.TaskData{ID: conf.Task.Id, Secret: conf.Task.Secret}
 	comm := client.NewMock("url")
@@ -76,6 +80,8 @@ func TestSendTestResults(t *testing.T) {
 			assert.Equal(t, displayTaskInfo.ID, srv.Create.DisplayTaskId)
 			assert.Equal(t, displayTaskInfo.Name, srv.Create.DisplayTaskName)
 			assert.False(t, srv.Create.Mainline)
+			assert.Equal(t, conf.ProjectRef.FilesIgnoredFromCache, srv.Create.HistoricalDataIgnore)
+			assert.Equal(t, conf.ProjectRef.IsStatsCacheDisabled(), srv.Create.HistoricalDataDisabled)
 		}
 		checkResults := func(t *testing.T, srv *timberutil.MockTestResultsServer) {
 			require.Len(t, srv.Results, 1)
@@ -97,6 +103,8 @@ func TestSendTestResults(t *testing.T) {
 				} else {
 					assert.Equal(t, results.Results[0].TestFile, res[0].Results[0].LogTestName)
 				}
+				assert.Equal(t, results.Results[0].URL, res[0].Results[0].LogUrl)
+				assert.Equal(t, results.Results[0].URLRaw, res[0].Results[0].RawLogUrl)
 				assert.EqualValues(t, results.Results[0].LineNum, res[0].Results[0].LineNum)
 				assert.Equal(t, int64(results.Results[0].StartTime), res[0].Results[0].TestStartTime.Seconds)
 				assert.Equal(t, int64(results.Results[0].EndTime), res[0].Results[0].TestEndTime.Seconds)
@@ -105,20 +113,36 @@ func TestSendTestResults(t *testing.T) {
 
 		for testName, testCase := range map[string]func(ctx context.Context, t *testing.T, srv *timberutil.MockTestResultsServer, comm *client.Mock){
 			"Succeeds": func(ctx context.Context, t *testing.T, srv *timberutil.MockTestResultsServer, comm *client.Mock) {
-				require.NoError(t, sendTestResults(ctx, comm, logger, conf, results))
+				t.Run("PassingResults", func(t *testing.T) {
+					require.NoError(t, sendTestResults(ctx, comm, logger, conf, results))
 
-				checkRecord(t, srv)
-				checkResults(t, srv)
-				assert.NotZero(t, srv.Close.TestResultsRecordId)
+					assert.Equal(t, srv.Close.TestResultsRecordId, conf.CedarTestResultsID)
+					checkRecord(t, srv)
+					checkResults(t, srv)
+					assert.NotZero(t, srv.Close.TestResultsRecordId)
+					assert.True(t, comm.HasCedarResults)
+					assert.False(t, comm.CedarResultsFailed)
+				})
+				t.Run("FailingResults", func(t *testing.T) {
+					results.Results[0].Status = evergreen.TestFailedStatus
+					require.NoError(t, sendTestResults(ctx, comm, logger, conf, results))
+
+					assert.True(t, comm.HasCedarResults)
+					assert.True(t, comm.CedarResultsFailed)
+					results.Results[0].Status = "pass"
+				})
 			},
 			"SucceedsNoDisplayTestName": func(ctx context.Context, t *testing.T, srv *timberutil.MockTestResultsServer, comm *client.Mock) {
 				displayTestName := results.Results[0].DisplayTestName
 				results.Results[0].DisplayTestName = ""
 				require.NoError(t, sendTestResults(ctx, comm, logger, conf, results))
 
+				assert.Equal(t, srv.Close.TestResultsRecordId, conf.CedarTestResultsID)
 				checkRecord(t, srv)
 				checkResults(t, srv)
 				assert.NotZero(t, srv.Close.TestResultsRecordId)
+				assert.True(t, comm.HasCedarResults)
+				assert.False(t, comm.CedarResultsFailed)
 				results.Results[0].DisplayTestName = displayTestName
 			},
 			"SucceedsNoLogTestName": func(ctx context.Context, t *testing.T, srv *timberutil.MockTestResultsServer, comm *client.Mock) {
@@ -126,9 +150,12 @@ func TestSendTestResults(t *testing.T) {
 				results.Results[0].LogTestName = ""
 				require.NoError(t, sendTestResults(ctx, comm, logger, conf, results))
 
+				assert.Equal(t, srv.Close.TestResultsRecordId, conf.CedarTestResultsID)
 				checkRecord(t, srv)
 				checkResults(t, srv)
 				assert.NotZero(t, srv.Close.TestResultsRecordId)
+				assert.True(t, comm.HasCedarResults)
+				assert.False(t, comm.CedarResultsFailed)
 				results.Results[0].LogTestName = logTestName
 			},
 			"FailsIfCreatingRecordFails": func(ctx context.Context, t *testing.T, srv *timberutil.MockTestResultsServer, comm *client.Mock) {
@@ -156,7 +183,10 @@ func TestSendTestResults(t *testing.T) {
 			},
 		} {
 			t.Run(testName, func(t *testing.T) {
+				conf.CedarTestResultsID = ""
 				srv := setupCedarServer(ctx, t, comm)
+				comm.HasCedarResults = false
+				comm.CedarResultsFailed = false
 				testCase(ctx, t, srv.TestResults, comm)
 			})
 		}

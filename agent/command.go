@@ -18,8 +18,8 @@ import (
 )
 
 type runCommandsOptions struct {
-	isTaskCommands  bool
-	shouldSetupFail bool
+	isTaskCommands bool
+	failPreAndPost bool
 }
 
 func (a *Agent) runCommands(ctx context.Context, tc *taskContext, commands []model.PluginCommandConf,
@@ -132,14 +132,18 @@ func (a *Agent) runCommandSet(ctx context.Context, tc *taskContext, commandInfo 
 		case err = <-cmdChan:
 			if err != nil {
 				tc.logger.Task().Errorf("Command failed: %v", err)
-				if options.isTaskCommands || options.shouldSetupFail ||
+				if options.isTaskCommands || options.failPreAndPost ||
 					(cmd.Name() == "git.get_project" && tc.taskModel.Requester == evergreen.MergeTestRequester) {
 					// any git.get_project in the commit queue should fail
 					return errors.Wrap(err, "command failed")
 				}
 			}
 		case <-ctx.Done():
-			tc.logger.Task().Errorf("Command stopped early: %s", ctx.Err())
+			if ctx.Err() == context.DeadlineExceeded {
+				tc.logger.Task().Errorf("Command stopped early, idle timeout duration of %d seconds has been reached: %s", int(tc.timeout.idleTimeoutDuration.Seconds()), ctx.Err())
+			} else {
+				tc.logger.Task().Errorf("Command stopped early: %s", ctx.Err())
+			}
 			return errors.Wrap(ctx.Err(), "Agent stopped early")
 		}
 		tc.logger.Task().Infof("Finished %s in %s", fullCommandName, time.Since(start).String())
@@ -202,6 +206,10 @@ func getFunctionName(commandInfo model.PluginCommandConf) string {
 // endTaskSyncCommands returns the commands to sync the task to S3 if it was
 // requested when the task completes.
 func endTaskSyncCommands(tc *taskContext, detail *apimodels.TaskEndDetail) *model.YAMLCommandSet {
+	if tc.taskModel == nil {
+		tc.logger.Task().Error("Task model not found for running task sync.")
+		return nil
+	}
 	if !tc.taskModel.SyncAtEndOpts.Enabled {
 		return nil
 	}

@@ -2,6 +2,7 @@ package model
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io/ioutil"
 	"path/filepath"
@@ -11,13 +12,14 @@ import (
 	"testing"
 
 	"github.com/evergreen-ci/evergreen/db"
+	"github.com/evergreen-ci/evergreen/model/patch"
 	"github.com/evergreen-ci/evergreen/testutil"
 	"github.com/evergreen-ci/utility"
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 // ShouldContainResembling tests whether a slice contains an element that DeepEquals
@@ -260,6 +262,26 @@ buildvariants:
 			So(bv.Tasks[0].CommitQueueMerge, ShouldBeTrue)
 		})
 	})
+}
+
+func TestIntermediateProjectWithActivate(t *testing.T) {
+	yml := `
+tasks:
+- name: "t1"
+buildvariants:
+- name: "v1"
+  activate: false 
+  run_on: "distro1"
+  tasks: 
+  - name: "t1"
+    activate: true
+`
+	p, err := createIntermediateProject([]byte(yml))
+	assert.NoError(t, err)
+	assert.NotNil(t, p)
+	bv := p.BuildVariants[0]
+	assert.False(t, utility.FromBoolTPtr(bv.Activate))
+	assert.True(t, utility.FromBoolPtr(bv.Tasks[0].Activate))
 }
 
 func TestTranslateTasks(t *testing.T) {
@@ -613,7 +635,8 @@ tasks:
 `
 
 	proj := &Project{}
-	_, err := LoadProjectInto([]byte(validYml), "id", proj)
+	ctx := context.Background()
+	_, err := LoadProjectInto(ctx, []byte(validYml), nil, "id", proj)
 	assert.NotNil(proj)
 	assert.Nil(err)
 	assert.Len(proj.BuildVariants[0].DisplayTasks, 1)
@@ -646,7 +669,7 @@ tasks:
 `
 
 	proj = &Project{}
-	_, err = LoadProjectInto([]byte(nonexistentTaskYml), "id", proj)
+	_, err = LoadProjectInto(ctx, []byte(nonexistentTaskYml), nil, "id", proj)
 	assert.NotNil(proj)
 	assert.Contains(err.Error(), "notHere: nothing named 'notHere'")
 	assert.Len(proj.BuildVariants[0].DisplayTasks, 1)
@@ -678,7 +701,7 @@ tasks:
 `
 
 	proj = &Project{}
-	_, err = LoadProjectInto([]byte(duplicateTaskYml), "id", proj)
+	_, err = LoadProjectInto(ctx, []byte(duplicateTaskYml), nil, "id", proj)
 	assert.NotNil(proj)
 	assert.NotNil(err)
 	assert.Contains(err.Error(), "execution task execTask3 is listed in more than 1 display task")
@@ -704,7 +727,7 @@ tasks:
 `
 
 	proj = &Project{}
-	_, err = LoadProjectInto([]byte(conflictYml), "id", proj)
+	_, err = LoadProjectInto(ctx, []byte(conflictYml), nil, "id", proj)
 	assert.NotNil(proj)
 	assert.NotNil(err)
 	assert.Contains(err.Error(), "display task execTask1 cannot have the same name as an execution task")
@@ -734,7 +757,7 @@ tasks:
 `
 
 	proj = &Project{}
-	_, err = LoadProjectInto([]byte(wildcardYml), "id", proj)
+	_, err = LoadProjectInto(ctx, []byte(wildcardYml), nil, "id", proj)
 	assert.NotNil(proj)
 	assert.Nil(err)
 	assert.Len(proj.BuildVariants[0].DisplayTasks, 1)
@@ -768,7 +791,7 @@ tasks:
 `
 
 	proj = &Project{}
-	_, err = LoadProjectInto([]byte(tagYml), "id", proj)
+	_, err = LoadProjectInto(ctx, []byte(tagYml), nil, "id", proj)
 	assert.NotNil(proj)
 	assert.Nil(err)
 	assert.Len(proj.BuildVariants[0].DisplayTasks, 2)
@@ -878,7 +901,8 @@ buildvariants:
 `
 
 	proj := &Project{}
-	_, err := LoadProjectInto([]byte(validYml), "id", proj)
+	ctx := context.Background()
+	_, err := LoadProjectInto(ctx, []byte(validYml), nil, "id", proj)
 	assert.NotNil(proj)
 	assert.Nil(err)
 	assert.Len(proj.TaskGroups, 1)
@@ -911,7 +935,7 @@ buildvariants:
 `
 
 	proj = &Project{}
-	_, err = LoadProjectInto([]byte(wrongTaskYml), "id", proj)
+	_, err = LoadProjectInto(ctx, []byte(wrongTaskYml), nil, "id", proj)
 	assert.NotNil(proj)
 	assert.NotNil(err)
 	assert.Contains(err.Error(), `nothing named 'example_task_3'`)
@@ -947,7 +971,7 @@ buildvariants:
 `
 
 	proj = &Project{}
-	_, err = LoadProjectInto([]byte(orderedYml), "id", proj)
+	_, err = LoadProjectInto(ctx, []byte(orderedYml), nil, "id", proj)
 	assert.NotNil(proj)
 	assert.Nil(err)
 	for i, t := range proj.TaskGroups[0].Tasks {
@@ -981,7 +1005,7 @@ buildvariants:
 `
 
 	proj = &Project{}
-	_, err = LoadProjectInto([]byte(tagYml), "id", proj)
+	_, err = LoadProjectInto(ctx, []byte(tagYml), nil, "id", proj)
 	assert.NotNil(proj)
 	assert.Nil(err)
 	assert.Len(proj.TaskGroups, 2)
@@ -1018,7 +1042,8 @@ buildvariants:
 `
 
 	proj := &Project{}
-	_, err := LoadProjectInto([]byte(validYml), "id", proj)
+	ctx := context.Background()
+	_, err := LoadProjectInto(ctx, []byte(validYml), nil, "id", proj)
 	assert.NotNil(proj)
 	assert.Nil(err)
 	assert.Len(proj.TaskGroups, 1)
@@ -1054,7 +1079,8 @@ buildvariants:
 `
 
 	proj := &Project{}
-	_, err := LoadProjectInto([]byte(validYml), "id", proj)
+	ctx := context.Background()
+	_, err := LoadProjectInto(ctx, []byte(validYml), nil, "id", proj)
 	assert.NotNil(proj)
 	assert.Nil(err)
 	assert.Len(proj.TaskGroups, 1)
@@ -1090,7 +1116,8 @@ buildvariants:
 `
 
 	proj := &Project{}
-	_, err := LoadProjectInto([]byte(validYml), "id", proj)
+	ctx := context.Background()
+	_, err := LoadProjectInto(ctx, []byte(validYml), nil, "id", proj)
 	assert.NotNil(proj)
 	assert.Nil(err)
 	assert.Len(proj.TaskGroups, 1)
@@ -1125,7 +1152,8 @@ buildvariants:
 `
 
 	proj := &Project{}
-	_, err := LoadProjectInto([]byte(validYml), "id", proj)
+	ctx := context.Background()
+	_, err := LoadProjectInto(ctx, []byte(validYml), nil, "id", proj)
 	assert.NotNil(proj)
 	assert.Nil(err)
 	assert.Len(proj.TaskGroups, 1)
@@ -1168,7 +1196,8 @@ buildvariants:
 `
 
 	proj := &Project{}
-	_, err := LoadProjectInto([]byte(yml), "id", proj)
+	ctx := context.Background()
+	_, err := LoadProjectInto(ctx, []byte(yml), nil, "id", proj)
 	assert.NotNil(proj)
 	assert.Nil(err)
 	assert.Len(proj.BuildVariants, 3)
@@ -1219,7 +1248,8 @@ buildvariants:
 `
 
 	proj := &Project{}
-	_, err := LoadProjectInto([]byte(yml), "id", proj)
+	ctx := context.Background()
+	_, err := LoadProjectInto(ctx, []byte(yml), nil, "id", proj)
 	assert.NotNil(proj)
 	assert.Nil(err)
 	assert.Len(proj.BuildVariants, 3)
@@ -1263,7 +1293,8 @@ buildvariants:
 `
 
 	proj := &Project{}
-	_, err := LoadProjectInto([]byte(yml), "id", proj)
+	ctx := context.Background()
+	_, err := LoadProjectInto(ctx, []byte(yml), nil, "id", proj)
 	assert.NotNil(t, proj)
 	assert.Nil(t, err)
 	assert.Len(t, proj.Tasks, 2)
@@ -1309,7 +1340,8 @@ buildvariants:
 `
 
 	proj := &Project{}
-	_, err := LoadProjectInto([]byte(yml), "id", proj)
+	ctx := context.Background()
+	_, err := LoadProjectInto(ctx, []byte(yml), nil, "id", proj)
 	assert.NotNil(t, proj)
 	assert.Nil(t, err)
 	assert.Len(t, proj.BuildVariants, 3)
@@ -1344,7 +1376,8 @@ tasks:
 `
 
 	proj := &Project{}
-	_, err := LoadProjectInto([]byte(yml), "id", proj)
+	ctx := context.Background()
+	_, err := LoadProjectInto(ctx, []byte(yml), nil, "id", proj)
 	assert.NotNil(proj)
 	assert.Nil(err)
 	assert.Equal("something", proj.Loggers.Agent[0].Type)
@@ -1355,7 +1388,7 @@ tasks:
 
 func TestAddBuildVariant(t *testing.T) {
 	pp := ParserProject{
-		Identifier: "small",
+		Identifier: utility.ToStringPtr("small"),
 	}
 
 	pp.AddBuildVariant("name", "my-name", "", nil, []string{"task"})
@@ -1372,43 +1405,43 @@ func TestTryUpsert(t *testing.T) {
 			pp := &ParserProject{
 				Id:                 "my-project",
 				ConfigUpdateNumber: 4,
-				Owner:              "me",
+				Owner:              utility.ToStringPtr("me"),
 			}
 			assert.NoError(t, pp.TryUpsert()) // new project should work
-			pp.Owner = "you"
+			pp.Owner = utility.ToStringPtr("you")
 			assert.NoError(t, pp.TryUpsert())
 			pp, err := ParserProjectFindOneById(pp.Id)
 			assert.NoError(t, err)
 			require.NotNil(t, pp)
-			assert.Equal(t, "you", pp.Owner)
+			assert.Equal(t, "you", utility.FromStringPtr(pp.Owner))
 		},
 		"noConfigNumber": func(t *testing.T) {
 			pp := &ParserProject{
 				Id:    "my-project",
-				Owner: "me",
+				Owner: utility.ToStringPtr("me"),
 			}
 			assert.NoError(t, pp.TryUpsert()) // new project should work
-			pp.Owner = "you"
+			pp.Owner = utility.ToStringPtr("you")
 			assert.NoError(t, pp.TryUpsert())
 			pp, err := ParserProjectFindOneById(pp.Id)
 			assert.NoError(t, err)
 			require.NotNil(t, pp)
-			assert.Equal(t, "you", pp.Owner)
+			assert.Equal(t, "you", utility.FromStringPtr(pp.Owner))
 		},
 		"configNumberDoesNotMatch": func(t *testing.T) {
 			pp := &ParserProject{
 				Id:                 "my-project",
 				ConfigUpdateNumber: 4,
-				Owner:              "me",
+				Owner:              utility.ToStringPtr("me"),
 			}
 			assert.NoError(t, pp.TryUpsert()) // new project should work
 			pp.ConfigUpdateNumber = 5
-			pp.Owner = "you"
+			pp.Owner = utility.ToStringPtr("you")
 			assert.NoError(t, pp.TryUpsert()) // should not update and should not error
 			pp, err := ParserProjectFindOneById(pp.Id)
 			assert.NoError(t, err)
 			require.NotNil(t, pp)
-			assert.Equal(t, "me", pp.Owner)
+			assert.Equal(t, "me", utility.FromStringPtr(pp.Owner))
 		},
 	} {
 		t.Run(testName, func(t *testing.T) {
@@ -1464,8 +1497,8 @@ tasks:
   - command: myCommand
     params:
       env:
-        ${MY_KEY}: my-value
-        ${MY_NUMS}: [1,2,3]
+        key: ${my_value}
+        list_key: [1,2,3]
     loggers:
       system:
        - type: commandLogger
@@ -1515,7 +1548,7 @@ func checkProjectPersists(t *testing.T, yml []byte) {
 	pp, err := createIntermediateProject(yml)
 	assert.NoError(t, err)
 	pp.Id = "my-project"
-	pp.Identifier = "old-project-identifier"
+	pp.Identifier = utility.ToStringPtr("old-project-identifier")
 	pp.ConfigUpdateNumber = 1
 
 	yamlToCompare, err := yaml.Marshal(pp)
@@ -1534,7 +1567,7 @@ func checkProjectPersists(t *testing.T, yml []byte) {
 	pp, err = createIntermediateProject(newYaml)
 	assert.NoError(t, err)
 	pp.Id = "my-project"
-	pp.Identifier = "new-project-identifier"
+	pp.Identifier = utility.ToStringPtr("new-project-identifier")
 
 	assert.NoError(t, pp.TryUpsert())
 
@@ -1549,4 +1582,635 @@ func checkProjectPersists(t *testing.T, yml []byte) {
 			assert.EqualValues(t, list[j].Params, newPP.Functions[i].List()[j].Params)
 		}
 	}
+}
+
+func TestMergeUnorderedUnique(t *testing.T) {
+	main := &ParserProject{
+		Tasks: []parserTask{
+			{Name: "my_task", PatchOnly: utility.TruePtr(), ExecTimeoutSecs: 15},
+			{Name: "your_task", GitTagOnly: utility.FalsePtr(), Stepback: utility.TruePtr(), RunOn: []string{"a different distro"}},
+			{Name: "tg_task", PatchOnly: utility.TruePtr(), RunOn: []string{"a different distro"}},
+		},
+		TaskGroups: []parserTaskGroup{
+			{
+				Name:  "my_tg",
+				Tasks: []string{"tg_task"},
+			},
+		},
+		Parameters: []ParameterInfo{
+			{
+				Parameter: patch.Parameter{
+					Key:   "key",
+					Value: "val",
+				},
+			},
+		},
+		Modules: []Module{
+			{
+				Name: "my_module",
+			},
+		},
+		Functions: map[string]*YAMLCommandSet{
+			"func1": &YAMLCommandSet{
+				SingleCommand: &PluginCommandConf{
+					Command: "single_command",
+				},
+			},
+			"func2": &YAMLCommandSet{
+				MultiCommand: []PluginCommandConf{
+					{
+						Command: "multi_command1",
+					}, {
+						Command: "multi_command2",
+					},
+				},
+			},
+		},
+	}
+
+	toMerge := &ParserProject{
+		Tasks: []parserTask{
+			{Name: "add_task"},
+		},
+		TaskGroups: []parserTaskGroup{
+			{
+				Name:  "add_group",
+				Tasks: []string{"add_tg_task"},
+			},
+		},
+		Parameters: []ParameterInfo{
+			{
+				Parameter: patch.Parameter{
+					Key:   "add_key",
+					Value: "add_val",
+				},
+			},
+		},
+		Modules: []Module{
+			{
+				Name: "add_my_module",
+			},
+		},
+		Functions: map[string]*YAMLCommandSet{
+			"add_func1": &YAMLCommandSet{
+				SingleCommand: &PluginCommandConf{
+					Command: "add_single_command",
+				},
+			},
+			"add_func2": &YAMLCommandSet{
+				MultiCommand: []PluginCommandConf{
+					{
+						Command: "add_multi_command1",
+					}, {
+						Command: "add_multi_command2",
+					},
+				},
+			},
+		},
+	}
+
+	err := main.mergeUnorderedUnique(toMerge)
+	assert.NoError(t, err)
+	assert.Equal(t, len(main.Tasks), 4)
+	assert.Equal(t, len(main.TaskGroups), 2)
+	assert.Equal(t, len(main.Parameters), 2)
+	assert.Equal(t, len(main.Modules), 2)
+	assert.Equal(t, len(main.Functions), 4)
+}
+
+func TestMergeUnorderedUniqueFail(t *testing.T) {
+	main := &ParserProject{
+		Tasks: []parserTask{
+			{Name: "my_task", PatchOnly: utility.TruePtr(), ExecTimeoutSecs: 15},
+		},
+		TaskGroups: []parserTaskGroup{
+			{
+				Name:  "my_tg",
+				Tasks: []string{"tg_task"},
+			},
+		},
+		Parameters: []ParameterInfo{
+			{
+				Parameter: patch.Parameter{
+					Key:   "key",
+					Value: "val",
+				},
+			},
+		},
+		Modules: []Module{
+			{
+				Name: "my_module",
+			},
+		},
+		Functions: map[string]*YAMLCommandSet{
+			"func1": &YAMLCommandSet{
+				SingleCommand: &PluginCommandConf{
+					Command: "single_command",
+				},
+			},
+			"func2": &YAMLCommandSet{
+				MultiCommand: []PluginCommandConf{
+					{
+						Command: "multi_command1",
+					}, {
+						Command: "multi_command2",
+					},
+				},
+			},
+		},
+	}
+
+	fail := &ParserProject{
+		Tasks: []parserTask{
+			{Name: "my_task", PatchOnly: utility.TruePtr(), ExecTimeoutSecs: 15},
+		},
+		TaskGroups: []parserTaskGroup{
+			{
+				Name:  "my_tg",
+				Tasks: []string{"tg_task"},
+			},
+		},
+		Parameters: []ParameterInfo{
+			{
+				Parameter: patch.Parameter{
+					Key:   "key",
+					Value: "val",
+				},
+			},
+		},
+		Modules: []Module{
+			{
+				Name: "my_module",
+			},
+		},
+		Functions: map[string]*YAMLCommandSet{
+			"func1": &YAMLCommandSet{
+				SingleCommand: &PluginCommandConf{
+					Command: "single_command",
+				},
+			},
+			"func2": &YAMLCommandSet{
+				MultiCommand: []PluginCommandConf{
+					{
+						Command: "multi_command1",
+					}, {
+						Command: "multi_command2",
+					},
+				},
+			},
+		},
+	}
+
+	err := main.mergeUnorderedUnique(fail)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "task 'my_task' has been declared already")
+	assert.Contains(t, err.Error(), "task group 'my_tg' has been declared already")
+	assert.Contains(t, err.Error(), "parameter key 'key' has been declared already")
+	assert.Contains(t, err.Error(), "module 'my_module' has been declared already")
+	assert.Contains(t, err.Error(), "function 'func1' has been declared already")
+	assert.Contains(t, err.Error(), "function 'func2' has been declared already")
+}
+
+func TestMergeUnordered(t *testing.T) {
+	main := &ParserProject{
+		Ignore: parserStringSlice{
+			"a",
+		},
+		Loggers: &LoggerConfig{
+			Agent:  []LogOpts{{Type: LogkeeperLogSender}},
+			System: []LogOpts{{Type: LogkeeperLogSender}},
+			Task:   []LogOpts{{Type: LogkeeperLogSender}},
+		},
+	}
+
+	add := &ParserProject{
+		Ignore: parserStringSlice{
+			"b",
+		},
+		Loggers: &LoggerConfig{
+			Agent:  []LogOpts{{LogDirectory: "a"}},
+			System: []LogOpts{{LogDirectory: "a"}},
+			Task:   []LogOpts{{LogDirectory: "a"}},
+		},
+	}
+	main.mergeUnordered(add)
+	assert.Equal(t, len(main.Ignore), 2)
+	assert.Equal(t, len(main.Loggers.Agent), 2)
+	assert.Equal(t, len(main.Loggers.System), 2)
+	assert.Equal(t, len(main.Loggers.Task), 2)
+}
+
+func TestMergeOrderedUnique(t *testing.T) {
+	main := &ParserProject{
+		Pre: &YAMLCommandSet{
+			SingleCommand: &PluginCommandConf{
+				Command: "pre",
+			},
+		},
+		Post: &YAMLCommandSet{
+			SingleCommand: &PluginCommandConf{
+				Command: "post",
+			},
+		},
+	}
+
+	add := &ParserProject{
+		Timeout: &YAMLCommandSet{
+			SingleCommand: &PluginCommandConf{
+				Command: "timeout",
+			},
+		},
+		EarlyTermination: &YAMLCommandSet{
+			SingleCommand: &PluginCommandConf{
+				Command: "early termination",
+			},
+		},
+	}
+
+	err := main.mergeOrderedUnique(add)
+	assert.NoError(t, err)
+	assert.NotNil(t, main.Pre)
+	assert.NotNil(t, main.Post)
+	assert.NotNil(t, main.Timeout)
+	assert.NotNil(t, main.EarlyTermination)
+}
+
+func TestMergeOrderedUniqueFail(t *testing.T) {
+	main := &ParserProject{
+		Pre: &YAMLCommandSet{
+			SingleCommand: &PluginCommandConf{
+				Command: "pre",
+			},
+		},
+		Post: &YAMLCommandSet{
+			SingleCommand: &PluginCommandConf{
+				Command: "post",
+			},
+		},
+		Timeout: &YAMLCommandSet{
+			SingleCommand: &PluginCommandConf{
+				Command: "timeout",
+			},
+		},
+		EarlyTermination: &YAMLCommandSet{
+			SingleCommand: &PluginCommandConf{
+				Command: "early termination",
+			},
+		},
+	}
+
+	add := &ParserProject{
+		Pre: &YAMLCommandSet{
+			SingleCommand: &PluginCommandConf{
+				Command: "add pre",
+			},
+		},
+		Post: &YAMLCommandSet{
+			SingleCommand: &PluginCommandConf{
+				Command: "add post",
+			},
+		},
+		Timeout: &YAMLCommandSet{
+			SingleCommand: &PluginCommandConf{
+				Command: "add timeout",
+			},
+		},
+		EarlyTermination: &YAMLCommandSet{
+			SingleCommand: &PluginCommandConf{
+				Command: "add early termination",
+			},
+		},
+	}
+
+	err := main.mergeOrderedUnique(add)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "pre can only be defined in one yaml")
+	assert.Contains(t, err.Error(), "post can only be defined in one yaml")
+	assert.Contains(t, err.Error(), "timeout can only be defined in one yaml")
+	assert.Contains(t, err.Error(), "early termination can only be defined in one yaml")
+}
+
+func TestMergeUnique(t *testing.T) {
+	main := &ParserProject{
+		Stepback:    utility.ToBoolPtr(true),
+		BatchTime:   utility.ToIntPtr(1),
+		OomTracker:  utility.ToBoolPtr(true),
+		DisplayName: utility.ToStringPtr("name"),
+	}
+
+	add := &ParserProject{
+		PreErrorFailsTask: utility.ToBoolPtr(true),
+		CommandType:       utility.ToStringPtr("type"),
+		CallbackTimeout:   utility.ToIntPtr(1),
+		ExecTimeoutSecs:   utility.ToIntPtr(1),
+	}
+
+	err := main.mergeUnique(add)
+	assert.NoError(t, err)
+	assert.NotNil(t, main.Stepback)
+	assert.NotNil(t, main.BatchTime)
+	assert.NotNil(t, main.OomTracker)
+	assert.NotNil(t, main.DisplayName)
+	assert.NotNil(t, main.PreErrorFailsTask)
+	assert.NotNil(t, main.CommandType)
+	assert.NotNil(t, main.CallbackTimeout)
+	assert.NotNil(t, main.ExecTimeoutSecs)
+}
+
+func TestMergeUniqueFail(t *testing.T) {
+	main := &ParserProject{
+		Stepback:          utility.ToBoolPtr(true),
+		BatchTime:         utility.ToIntPtr(1),
+		OomTracker:        utility.ToBoolPtr(true),
+		PreErrorFailsTask: utility.ToBoolPtr(true),
+		DisplayName:       utility.ToStringPtr("name"),
+		CommandType:       utility.ToStringPtr("type"),
+		CallbackTimeout:   utility.ToIntPtr(1),
+		ExecTimeoutSecs:   utility.ToIntPtr(1),
+	}
+
+	add := &ParserProject{
+		Stepback:          utility.ToBoolPtr(true),
+		BatchTime:         utility.ToIntPtr(1),
+		OomTracker:        utility.ToBoolPtr(true),
+		PreErrorFailsTask: utility.ToBoolPtr(true),
+		DisplayName:       utility.ToStringPtr("name"),
+		CommandType:       utility.ToStringPtr("type"),
+		CallbackTimeout:   utility.ToIntPtr(1),
+		ExecTimeoutSecs:   utility.ToIntPtr(1),
+	}
+
+	err := main.mergeUnique(add)
+	assert.Contains(t, err.Error(), "stepback can only be defined in one yaml")
+	assert.Contains(t, err.Error(), "batch time can only be defined in one yaml")
+	assert.Contains(t, err.Error(), "OOM tracker can only be defined in one yaml")
+	assert.Contains(t, err.Error(), "pre error fails task can only be defined in one yaml")
+	assert.Contains(t, err.Error(), "display name can only be defined in one yaml")
+	assert.Contains(t, err.Error(), "command type can only be defined in one yaml")
+	assert.Contains(t, err.Error(), "callback timeout can only be defined in one yaml")
+	assert.Contains(t, err.Error(), "exec timeout secs can only be defined in one yaml")
+}
+
+func TestMergeBuildVariant(t *testing.T) {
+	main := &ParserProject{
+		BuildVariants: []parserBV{
+			parserBV{
+				Name: "a_variant",
+				Tasks: parserBVTaskUnits{
+					parserBVTaskUnit{
+						Name:      "say-bye",
+						BatchTime: &taskBatchTime,
+					},
+				},
+				DisplayTasks: []displayTask{
+					displayTask{
+						Name:           "my_display_task_old_variant",
+						ExecutionTasks: []string{"say-bye"},
+					},
+				},
+			},
+		},
+	}
+
+	add := &ParserProject{
+		BuildVariants: []parserBV{
+			parserBV{
+				Name: "a_variant",
+				Tasks: parserBVTaskUnits{
+					parserBVTaskUnit{
+						Name: "add this task",
+					},
+				},
+			},
+			parserBV{
+				Name:      "another_variant",
+				BatchTime: &bvBatchTime,
+				Tasks: parserBVTaskUnits{
+					parserBVTaskUnit{
+						Name: "example_task_group",
+					},
+					parserBVTaskUnit{
+						Name:      "say-bye",
+						BatchTime: &taskBatchTime,
+					},
+				},
+				DisplayTasks: []displayTask{
+					displayTask{
+						Name:           "my_display_task_new_variant",
+						ExecutionTasks: []string{"another_task"},
+					},
+				},
+			},
+		},
+	}
+
+	err := main.mergeBuildVariant(add)
+	assert.NoError(t, err)
+	assert.Equal(t, len(main.BuildVariants), 2)
+	assert.Equal(t, len(main.BuildVariants[0].Tasks), 2)
+}
+
+func TestMergeBuildVariantFail(t *testing.T) {
+	main := &ParserProject{
+		BuildVariants: []parserBV{
+			parserBV{
+				Name: "a_variant",
+				Tasks: parserBVTaskUnits{
+					parserBVTaskUnit{
+						Name:      "say-bye",
+						BatchTime: &taskBatchTime,
+					},
+				},
+				DisplayTasks: []displayTask{
+					displayTask{
+						Name:           "my_display_task_old_variant",
+						ExecutionTasks: []string{"say-bye"},
+					},
+				},
+			},
+		},
+	}
+
+	add := &ParserProject{
+		BuildVariants: []parserBV{
+			parserBV{
+				Name:        "a_variant",
+				DisplayName: "break test",
+				Tasks: parserBVTaskUnits{
+					parserBVTaskUnit{
+						Name: "add this task",
+					},
+				},
+			},
+		},
+	}
+
+	err := main.mergeBuildVariant(add)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "build variant 'a_variant' has been declared already")
+}
+
+func TestMergeMatrix(t *testing.T) {
+	main := &ParserProject{
+		Axes: []matrixAxis{
+			{
+				Id: "a",
+				Values: []axisValue{
+					{Id: "0", Tags: []string{"zero"}},
+					{Id: "1", Tags: []string{"odd"}},
+					{Id: "2", Tags: []string{"even", "prime"}},
+					{Id: "3", Tags: []string{"odd", "prime"}},
+				},
+			},
+		},
+	}
+
+	add := &ParserProject{}
+
+	err := main.mergeMatrix(add)
+	assert.NoError(t, err)
+	assert.Equal(t, len(main.Axes), 1)
+}
+
+func TestMergeMatrixFail(t *testing.T) {
+	main := &ParserProject{
+		Axes: []matrixAxis{
+			{
+				Id: "a",
+				Values: []axisValue{
+					{Id: "0", Tags: []string{"zero"}},
+					{Id: "1", Tags: []string{"odd"}},
+					{Id: "2", Tags: []string{"even", "prime"}},
+					{Id: "3", Tags: []string{"odd", "prime"}},
+				},
+			},
+		},
+	}
+
+	add := &ParserProject{
+		Axes: []matrixAxis{
+			{
+				Id: "b",
+				Values: []axisValue{
+					{Id: "0", Tags: []string{"zero"}},
+					{Id: "1", Tags: []string{"odd"}},
+					{Id: "2", Tags: []string{"even", "prime"}},
+					{Id: "3", Tags: []string{"odd", "prime"}},
+				},
+			},
+		},
+	}
+
+	err := main.mergeMatrix(add)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "matrixes can only be defined in one yaml")
+}
+
+func TestMergeMultipleProjectConfigs(t *testing.T) {
+	mainYaml := `
+include: 
+  - filename: small.yml
+    module: something_different
+post:
+  - command: command_number_1
+tasks:
+  - name: my_task
+    commands:
+      - func: main_function
+functions:
+  main_function:
+    command: definition_1
+modules:
+- name: "something_different"
+  repo: "git@github.com:foo/bar.git"
+  prefix: "src/third_party"
+  branch: "master"
+ignore:
+  - "*.md"
+  - "scripts/*"
+`
+	smallYaml := `
+stepback: true
+tasks:
+  - name: small_task
+    commands:
+      - func: small_function
+functions:
+  small_function:
+    command: definition_3
+ignore:
+  - ".github/*"
+`
+
+	p1, err := createIntermediateProject([]byte(mainYaml))
+	assert.NoError(t, err)
+	assert.NotNil(t, p1)
+	p2, err := createIntermediateProject([]byte(smallYaml))
+	assert.NoError(t, err)
+	assert.NotNil(t, p2)
+	err = p1.mergeMultipleProjectConfigs(p2)
+	assert.NoError(t, err)
+	assert.NotNil(t, p1)
+	assert.Equal(t, len(p1.Functions), 2)
+	assert.Equal(t, len(p1.Tasks), 2)
+	assert.Equal(t, len(p1.Ignore), 3)
+	assert.Equal(t, p1.Stepback, boolPtr(true))
+	assert.NotEqual(t, p1.Post, nil)
+}
+
+func TestMergeMultipleProjectConfigsBuildVariant(t *testing.T) {
+	mainYaml := `
+include: 
+  - filename: small.yml
+buildvariants:
+  - name: bv1
+    display_name: bv1_display
+    run_on:
+      - ubuntu1604-test
+    tasks:
+      - name: task1
+`
+	succeed := `
+buildvariants:
+  - name: bv1
+    tasks:
+      - name: task2
+  - name: bv2
+    display_name: bv2_display
+    run_on:
+      - ubuntu1604-test
+    tasks:
+      - name: task3
+`
+
+	fail := `
+buildvariants:
+  - name: bv1
+    display_name: bv1_display
+    tasks:
+      - name: task3
+`
+
+	p1, err := createIntermediateProject([]byte(mainYaml))
+	assert.NoError(t, err)
+	assert.NotNil(t, p1)
+	p2, err := createIntermediateProject([]byte(succeed))
+	assert.NoError(t, err)
+	assert.NotNil(t, p2)
+	p3, err := createIntermediateProject([]byte(fail))
+	assert.NoError(t, err)
+	assert.NotNil(t, p3)
+	err = p1.mergeMultipleProjectConfigs(p2)
+	assert.NoError(t, err)
+	assert.NotNil(t, p1)
+	assert.Equal(t, len(p1.BuildVariants), 2)
+	if p1.BuildVariants[0].name() == "bv1" {
+		assert.Equal(t, len(p1.BuildVariants[0].Tasks), 2)
+		assert.Equal(t, len(p1.BuildVariants[1].Tasks), 1)
+	} else {
+		assert.Equal(t, len(p1.BuildVariants[0].Tasks), 1)
+		assert.Equal(t, len(p1.BuildVariants[1].Tasks), 2)
+	}
+	err = p1.mergeMultipleProjectConfigs(p3)
+	assert.Error(t, err)
 }

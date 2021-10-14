@@ -358,7 +358,7 @@ func (e *envState) createLocalQueue(ctx context.Context) error {
 	}
 
 	e.RegisterCloser("background-local-queue", true, func(ctx context.Context) error {
-		e.localQueue.Runner().Close(ctx)
+		e.localQueue.Close(ctx)
 		return nil
 	})
 
@@ -376,13 +376,15 @@ func (e *envState) createApplicationQueue(ctx context.Context) error {
 	opts.SkipReportingIndexBuilds = true
 	opts.UseGroups = false
 	opts.LockTimeout = time.Duration(e.settings.Amboy.LockTimeoutMinutes) * time.Minute
+	opts.SampleSize = e.settings.Amboy.SampleSize
 
 	args := queue.MongoDBQueueCreationOptions{
-		Size:    e.settings.Amboy.PoolSizeRemote,
-		Name:    e.settings.Amboy.Name,
-		Ordered: false,
-		Client:  e.client,
-		MDB:     opts,
+		Size:      e.settings.Amboy.PoolSizeRemote,
+		Name:      e.settings.Amboy.Name,
+		Ordered:   false,
+		Client:    e.client,
+		MDB:       opts,
+		Retryable: e.settings.Amboy.Retry.RetryableQueueOptions(),
 	}
 
 	rq, err := queue.NewMongoDBQueue(ctx, args)
@@ -395,7 +397,7 @@ func (e *envState) createApplicationQueue(ctx context.Context) error {
 	}
 	e.remoteQueue = rq
 	e.RegisterCloser("application-queue", false, func(ctx context.Context) error {
-		e.remoteQueue.Runner().Close(ctx)
+		e.remoteQueue.Close(ctx)
 		return nil
 	})
 
@@ -420,6 +422,7 @@ func (e *envState) createRemoteQueueGroup(ctx context.Context) error {
 		BackgroundCreateFrequency: time.Duration(e.settings.Amboy.GroupBackgroundCreateFrequencyMinutes) * time.Minute,
 		PruneFrequency:            time.Duration(e.settings.Amboy.GroupPruneFrequencyMinutes) * time.Minute,
 		TTL:                       time.Duration(e.settings.Amboy.GroupTTLMinutes) * time.Minute,
+		Retryable:                 e.settings.Amboy.Retry.RetryableQueueOptions(),
 	}
 
 	remoteQueueGroup, err := queue.NewMongoDBSingleQueueGroup(ctx, remoteQueueGroupOpts, e.client, opts)
@@ -468,7 +471,7 @@ func (e *envState) createNotificationQueue(ctx context.Context) error {
 			catcher.Add(errors.New("failed to stop with running jobs"))
 		}
 
-		e.notificationsQueue.Runner().Close(ctx)
+		e.notificationsQueue.Close(ctx)
 
 		grip.Debug(message.Fields{
 			"message":     "closed notification queue",
@@ -498,7 +501,6 @@ func (e *envState) createNotificationQueue(ctx context.Context) error {
 func (e *envState) initQueues(ctx context.Context) []error {
 	catcher := grip.NewBasicCatcher()
 	catcher.NewWhen(e.localQueue == nil, "local queue is not defined")
-	catcher.NewWhen(e.notificationsQueue == nil, "notification queue is not defined")
 	catcher.NewWhen(e.notificationsQueue == nil, "notification queue is not defined")
 
 	if e.localQueue != nil {
@@ -630,15 +632,15 @@ func (e *envState) initSenders(ctx context.Context) error {
 	catcher := grip.NewBasicCatcher()
 	for name, s := range e.senders {
 		catcher.Add(s.SetLevel(levelInfo))
+		tempName := name
 		catcher.Add(s.SetErrorHandler(func(err error, m message.Composer) {
 			if err == nil {
 				return
 			}
-
 			grip.Error(message.WrapError(err, message.Fields{
 				"notification":        m.String(),
 				"message_type":        fmt.Sprintf("%T", m),
-				"notification_target": name.String(),
+				"notification_target": tempName.String(),
 				"event":               m,
 			}))
 		}))
@@ -787,7 +789,7 @@ func (e *envState) ClientConfig() *ClientConfig {
 	return &config
 }
 
-type BuildBaronProject struct {
+type BuildBaronSettings struct {
 	// todo: reconfigure the BuildBaronConfigured check to use TicketSearchProjects instead
 
 	TicketCreateProject  string   `mapstructure:"ticket_create_project" bson:"ticket_create_project"`
@@ -846,24 +848,12 @@ func (e *envState) SaveConfig() error {
 		if pluginName == "buildbaron" {
 			for fieldName, field := range plugin {
 				if fieldName == "projects" {
-					var projects map[string]BuildBaronProject
+					var projects map[string]BuildBaronSettings
 					err := mapstructure.Decode(field, &projects)
 					if err != nil {
 						return errors.Wrap(err, "problem decoding buildbaron projects")
 					}
 					plugin[fieldName] = projects
-				}
-			}
-		}
-		if pluginName == "dashboard" {
-			for fieldName, field := range plugin {
-				if fieldName == "branches" {
-					var branches map[string][]string
-					err := mapstructure.Decode(field, &branches)
-					if err != nil {
-						return errors.Wrap(err, "problem decoding dashboard branches")
-					}
-					plugin[fieldName] = branches
 				}
 			}
 		}

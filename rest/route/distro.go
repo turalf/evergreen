@@ -296,7 +296,6 @@ func (h *distroIDPatchHandler) Factory() gimlet.RouteHandler {
 // Parse fetches the distroId from the http request.
 func (h *distroIDPatchHandler) Parse(ctx context.Context, r *http.Request) error {
 	h.distroID = gimlet.GetVars(r)["distro_id"]
-
 	body := util.NewRequestReader(r)
 	defer body.Close()
 	b, err := ioutil.ReadAll(body)
@@ -310,6 +309,7 @@ func (h *distroIDPatchHandler) Parse(ctx context.Context, r *http.Request) error
 
 // Run updates a distro by id.
 func (h *distroIDPatchHandler) Run(ctx context.Context) gimlet.Responder {
+	user := MustHaveUser(ctx)
 	old, err := h.sc.FindDistroById(h.distroID)
 	if err != nil {
 		return gimlet.MakeJSONErrorResponder(errors.Wrapf(err, "Database error for find() by distro id '%s'", h.distroID))
@@ -340,6 +340,7 @@ func (h *distroIDPatchHandler) Run(ctx context.Context) gimlet.Responder {
 	if err = h.sc.UpdateDistro(old, d); err != nil {
 		return gimlet.MakeJSONErrorResponder(errors.Wrapf(err, "Database error for update() by distro id '%s'", h.distroID))
 	}
+	event.LogDistroModified(h.distroID, user.Username(), d.NewDistroData())
 
 	return gimlet.NewJSONResponse(apiDistro)
 }
@@ -512,8 +513,7 @@ func (h *modifyDistrosSettingsHandler) Run(ctx context.Context) gimlet.Responder
 		}
 		for i, doc := range d.ProviderSettingsList {
 			// validate distro with old settings
-			originalErrors := validator.ValidationErrors{}
-			originalErrors, err = validator.CheckDistro(ctx, &d, settings, false)
+			originalErrors, err := validator.CheckDistro(ctx, &d, settings, false)
 			if err != nil {
 				catcher.Add(errors.Wrapf(err, "error validating original distro '%s'", d.Id))
 				continue
@@ -530,8 +530,7 @@ func (h *modifyDistrosSettingsHandler) Run(ctx context.Context) gimlet.Responder
 
 			d.ProviderSettingsList[i] = doc
 			// validate distro with new settings
-			vErrors := validator.ValidationErrors{}
-			vErrors, err = validator.CheckDistro(ctx, &d, settings, false)
+			vErrors, err := validator.CheckDistro(ctx, &d, settings, false)
 			if err != nil {
 				catcher.Add(errors.Wrapf(err, "error validating distro '%s'", d.Id))
 				continue

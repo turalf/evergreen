@@ -66,26 +66,30 @@ var (
 	ExecutionTasksKey           = bsonutil.MustHaveTag(Task{}, "ExecutionTasks")
 	ExecutionTasksFullKey       = bsonutil.MustHaveTag(Task{}, "ExecutionTasksFull")
 	DisplayOnlyKey              = bsonutil.MustHaveTag(Task{}, "DisplayOnly")
+	DisplayTaskIdKey            = bsonutil.MustHaveTag(Task{}, "DisplayTaskId")
 	TaskGroupKey                = bsonutil.MustHaveTag(Task{}, "TaskGroup")
 	TaskGroupMaxHostsKey        = bsonutil.MustHaveTag(Task{}, "TaskGroupMaxHosts")
 	TaskGroupOrderKey           = bsonutil.MustHaveTag(Task{}, "TaskGroupOrder")
 	GenerateTaskKey             = bsonutil.MustHaveTag(Task{}, "GenerateTask")
 	GeneratedTasksKey           = bsonutil.MustHaveTag(Task{}, "GeneratedTasks")
 	GeneratedByKey              = bsonutil.MustHaveTag(Task{}, "GeneratedBy")
+	HasLegacyResultsKey         = bsonutil.MustHaveTag(Task{}, "HasLegacyResults")
 	HasCedarResultsKey          = bsonutil.MustHaveTag(Task{}, "HasCedarResults")
+	CedarResultsFailedKey       = bsonutil.MustHaveTag(Task{}, "CedarResultsFailed")
 	IsGithubCheckKey            = bsonutil.MustHaveTag(Task{}, "IsGithubCheck")
 	HostCreateDetailsKey        = bsonutil.MustHaveTag(Task{}, "HostCreateDetails")
 
 	// GeneratedJSONKey is no longer used but must be kept for old tasks.
-	GeneratedJSONKey           = bsonutil.MustHaveTag(Task{}, "GeneratedJSON")
-	GeneratedJSONAsStringKey   = bsonutil.MustHaveTag(Task{}, "GeneratedJSONAsString")
-	GenerateTasksErrorKey      = bsonutil.MustHaveTag(Task{}, "GenerateTasksError")
-	ResetWhenFinishedKey       = bsonutil.MustHaveTag(Task{}, "ResetWhenFinished")
-	LogsKey                    = bsonutil.MustHaveTag(Task{}, "Logs")
-	CommitQueueMergeKey        = bsonutil.MustHaveTag(Task{}, "CommitQueueMerge")
-	DisplayStatusKey           = bsonutil.MustHaveTag(Task{}, "DisplayStatus")
-	BaseTaskKey                = bsonutil.MustHaveTag(Task{}, "BaseTask")
-	BuildVariantDisplayNameKey = bsonutil.MustHaveTag(Task{}, "BuildVariantDisplayName")
+	GeneratedJSONKey            = bsonutil.MustHaveTag(Task{}, "GeneratedJSON")
+	GeneratedJSONAsStringKey    = bsonutil.MustHaveTag(Task{}, "GeneratedJSONAsString")
+	GenerateTasksErrorKey       = bsonutil.MustHaveTag(Task{}, "GenerateTasksError")
+	GeneratedTasksToActivateKey = bsonutil.MustHaveTag(Task{}, "GeneratedTasksToActivate")
+	ResetWhenFinishedKey        = bsonutil.MustHaveTag(Task{}, "ResetWhenFinished")
+	LogsKey                     = bsonutil.MustHaveTag(Task{}, "Logs")
+	CommitQueueMergeKey         = bsonutil.MustHaveTag(Task{}, "CommitQueueMerge")
+	DisplayStatusKey            = bsonutil.MustHaveTag(Task{}, "DisplayStatus")
+	BaseTaskKey                 = bsonutil.MustHaveTag(Task{}, "BaseTask")
+	BuildVariantDisplayNameKey  = bsonutil.MustHaveTag(Task{}, "BuildVariantDisplayName")
 
 	// BSON fields for the test result struct
 	TestResultStatusKey    = bsonutil.MustHaveTag(TestResult{}, "Status")
@@ -136,15 +140,35 @@ var (
 	},
 	}
 
+	// Checks if task dependencies are attainable/ have met all their dependencies and are not blocked
+	isUnattainable = bson.M{
+		"$reduce": bson.M{
+			"input":        "$" + DependsOnKey,
+			"initialValue": false,
+			"in":           bson.M{"$or": []interface{}{"$$value", bsonutil.GetDottedKeyName("$$this", DependencyUnattainableKey)}},
+		},
+	}
+
 	addDisplayStatus = bson.M{
 		"$addFields": bson.M{
 			DisplayStatusKey: displayStatusExpression,
 		},
 	}
 
+	// This should reflect Task.GetDisplayStatus()
 	displayStatusExpression = bson.M{
 		"$switch": bson.M{
 			"branches": []bson.M{
+				{
+					"case": bson.M{
+						"$ne": []interface{}{
+							bson.M{
+								"$size": bson.M{"$ifNull": []interface{}{"$annotation_docs", []bson.M{}}},
+							}, 0,
+						},
+					},
+					"then": evergreen.TaskKnownIssue,
+				},
 				{
 					"case": bson.M{
 						"$eq": []interface{}{"$" + AbortedKey, true},
@@ -193,6 +217,37 @@ var (
 						"$eq": []interface{}{"$" + bsonutil.GetDottedKeyName(DetailsKey, TaskEndDetailTimedOut), true},
 					},
 					"then": evergreen.TaskTimedOut,
+				},
+				// A task will be unscheduled if it is not activated
+				{
+					"case": bson.M{
+						"$and": []bson.M{
+							{"$eq": []interface{}{"$" + ActivatedKey, false}},
+							{"$eq": []string{"$" + StatusKey, evergreen.TaskUndispatched}},
+						},
+					},
+					"then": evergreen.TaskUnscheduled,
+				},
+				// A task will be blocked if it has dependencies that are not attainable
+				{
+					"case": bson.M{
+						"$and": []bson.M{
+							{"$eq": []string{"$" + StatusKey, evergreen.TaskUndispatched}},
+							{OverrideDependenciesKey: false},
+							isUnattainable,
+						},
+					},
+					"then": evergreen.TaskStatusBlocked,
+				},
+				// A task will run if it is activated and does not have any blocking deps
+				{
+					"case": bson.M{
+						"$and": []bson.M{
+							{"$eq": []string{"$" + StatusKey, evergreen.TaskUndispatched}},
+							{"$eq": []interface{}{"$" + ActivatedKey, true}},
+						},
+					},
+					"then": evergreen.TaskWillRun,
 				},
 			},
 			"default": "$" + StatusKey,
@@ -288,6 +343,14 @@ func ByActivation(active bool) db.Q {
 func ByVersion(version string) db.Q {
 	return db.Query(bson.M{
 		VersionKey: version,
+	})
+}
+
+// FailedTasksByVersion produces a query that returns all failed tasks for the given version.
+func FailedTasksByVersion(version string) db.Q {
+	return db.Query(bson.M{
+		VersionKey: version,
+		StatusKey:  bson.M{"$in": evergreen.TaskFailureStatuses},
 	})
 }
 
@@ -749,10 +812,190 @@ func GetRecentTaskStats(period time.Duration, nameKey string) ([]StatusItem, err
 	return result, nil
 }
 
+// FindByExecutionTasksAndMaxExecution returns the tasks corresponding to the passed in taskIds and execution,
+// or the most recent executions of those tasks if they do not have a matching execution
+func FindByExecutionTasksAndMaxExecution(taskIds []*string, execution int) ([]Task, error) {
+	pipeline := []bson.M{}
+	match := bson.M{
+		"$match": bson.M{
+			IdKey: bson.M{
+				"$in": taskIds,
+			},
+			ExecutionKey: bson.M{
+				"$lte": execution,
+			},
+		},
+	}
+	pipeline = append(pipeline, match)
+	result := []Task{}
+	if err := Aggregate(pipeline, &result); err != nil {
+		return nil, errors.Wrap(err, "Error finding tasks in task collection")
+	}
+	// Get the taskIds that were not found in the previous match stage
+	foundIds := []string{}
+	for _, t := range result {
+		foundIds = append(foundIds, t.Id)
+	}
+
+	missingTasks, _ := utility.StringSliceSymmetricDifference(utility.FromStringPtrSlice(taskIds), foundIds)
+	if len(missingTasks) > 0 {
+		oldTasks := []Task{}
+		oldTaskPipeline := []bson.M{}
+		match = bson.M{
+			"$match": bson.M{
+				OldTaskIdKey: bson.M{
+					"$in": missingTasks,
+				},
+				ExecutionKey: bson.M{
+					"$lte": execution,
+				},
+			},
+		}
+		oldTaskPipeline = append(oldTaskPipeline, match)
+		if err := db.Aggregate(OldCollection, oldTaskPipeline, &oldTasks); err != nil {
+			return nil, errors.Wrap(err, "error finding tasks in old tasks collection")
+		}
+
+		result = append(result, oldTasks...)
+	}
+	if len(result) == 0 {
+		return nil, nil
+	}
+	return result, nil
+}
+
+type BuildVariantTuple struct {
+	BuildVariant string `bson:"build_variant"`
+	DisplayName  string `bson:"display_name"`
+}
+
+// FindUniqueBuildVariantNamesByTask returns a list of unique build variants names and their display names for a given task name,
+// it tries to return the most recent display name for each build variant to avoid duplicates from display names changing
+func FindUniqueBuildVariantNamesByTask(projectId string, taskName string) ([]*BuildVariantTuple, error) {
+	pipeline := []bson.M{
+		{"$match": bson.M{
+			ProjectKey:     projectId,
+			DisplayNameKey: taskName,
+			RequesterKey:   bson.M{"$in": evergreen.SystemVersionRequesterTypes}},
+		}}
+
+	// sort by most recent version to get the most recent display names for the build variants first
+	sortByOrderNumber := bson.M{
+		"$sort": bson.M{
+			CreateTimeKey: -1,
+		},
+	}
+
+	pipeline = append(pipeline, sortByOrderNumber)
+
+	// group the build variants by unique build variant names and get a build id for each
+	groupByBuildVariant := bson.M{
+		"$group": bson.M{
+			"_id": bson.M{
+				BuildVariantKey: "$" + BuildVariantKey,
+			},
+			BuildIdKey: bson.M{
+				"$first": "$" + BuildIdKey,
+			},
+		},
+	}
+
+	pipeline = append(pipeline, groupByBuildVariant)
+
+	// reorganize the results to get the build variant names and a corresponding build id
+	projectBuildId := bson.M{
+		"$project": bson.M{
+			"_id":           0,
+			BuildVariantKey: bsonutil.GetDottedKeyName("$_id", BuildVariantKey),
+			BuildIdKey:      "$" + BuildIdKey,
+		},
+	}
+
+	pipeline = append(pipeline, projectBuildId)
+
+	// get the display name for each build variant
+	pipeline = append(pipeline, AddBuildVariantDisplayName...)
+
+	// cleanup the results
+	project := bson.M{
+		"$project": bson.M{
+			"_id":           0,
+			"build_variant": "$" + BuildVariantKey,
+			"display_name":  "$" + BuildVariantDisplayNameKey,
+		},
+	}
+	pipeline = append(pipeline, project)
+
+	sort := bson.M{
+		"$sort": bson.M{
+			"display_name": 1,
+		},
+	}
+	pipeline = append(pipeline, sort)
+
+	result := []*BuildVariantTuple{}
+	if err := Aggregate(pipeline, &result); err != nil {
+		return nil, errors.Wrap(err, "can't get build variant tasks")
+	}
+	if len(result) == 0 {
+		return nil, nil
+	}
+	return result, nil
+}
+
+// FindTaskNamesByBuildVariant returns a list of unique task names for a given build variant
+func FindTaskNamesByBuildVariant(projectId string, buildVariant string) ([]string, error) {
+	pipeline := []bson.M{
+		{"$match": bson.M{
+			ProjectKey:      projectId,
+			BuildVariantKey: buildVariant,
+			RequesterKey:    bson.M{"$in": evergreen.SystemVersionRequesterTypes}},
+		}}
+
+	group := bson.M{
+		"$group": bson.M{
+			"_id":   buildVariant,
+			"tasks": bson.M{"$addToSet": "$" + DisplayNameKey},
+		},
+	}
+	unwindAndSort := []bson.M{
+		{
+			"$unwind": "$tasks",
+		},
+		{
+			"$sort": bson.M{
+				"tasks": 1,
+			},
+		},
+		{
+			"$group": bson.M{
+				"_id":   nil,
+				"tasks": bson.M{"$push": "$tasks"},
+			},
+		},
+	}
+
+	pipeline = append(pipeline, group)
+	pipeline = append(pipeline, unwindAndSort...)
+
+	type buildVariantTasks struct {
+		Tasks []string `bson:"tasks"`
+	}
+
+	result := []buildVariantTasks{}
+	if err := Aggregate(pipeline, &result); err != nil {
+		return nil, errors.Wrap(err, "can't get build variant tasks")
+	}
+	if len(result) == 0 {
+		return nil, nil
+	}
+	return result[0].Tasks, nil
+}
+
 // DB Boilerplate
 
-// FindOneNoMerge is a FindOne without merging test results.
-func FindOneNoMerge(query db.Q) (*Task, error) {
+// FindOne returns a single task that satisfies the query.
+func FindOne(query db.Q) (*Task, error) {
 	task := &Task{}
 	err := db.FindOneQ(Collection, query, task)
 	if adb.ResultsNotFound(err) {
@@ -761,21 +1004,7 @@ func FindOneNoMerge(query db.Q) (*Task, error) {
 	return task, err
 }
 
-// FindOne returns one task that satisfies the query.
-func FindOne(query db.Q) (*Task, error) {
-	task, err := FindOneNoMerge(query)
-	if err != nil {
-		return nil, errors.Wrap(err, "error finding task")
-	}
-	if task == nil {
-		return nil, nil
-	}
-	if err = task.MergeNewTestResults(); err != nil {
-		return nil, errors.Wrap(err, "errors merging new test results")
-	}
-	return task, err
-}
-
+// FindOneId returns a single task with the given ID.
 func FindOneId(id string) (*Task, error) {
 	task := &Task{}
 	query := db.Query(bson.M{IdKey: id})
@@ -791,6 +1020,8 @@ func FindOneId(id string) (*Task, error) {
 	return task, nil
 }
 
+// FindByIdExecution returns a single task with the given ID and execution. If
+// execution is nil, the latest execution is returned.
 func FindByIdExecution(id string, execution *int) (*Task, error) {
 	if execution == nil {
 		return FindOneId(id)
@@ -798,6 +1029,7 @@ func FindByIdExecution(id string, execution *int) (*Task, error) {
 	return FindOneIdAndExecution(id, *execution)
 }
 
+// FindOneIdAndExecution returns a single task with the given ID and execution.
 func FindOneIdAndExecution(id string, execution int) (*Task, error) {
 	task := &Task{}
 	query := db.Query(bson.M{
@@ -807,17 +1039,70 @@ func FindOneIdAndExecution(id string, execution int) (*Task, error) {
 	err := db.FindOneQ(Collection, query, task)
 
 	if adb.ResultsNotFound(err) {
-		return FindOneOldNoMergeByIdAndExecution(id, execution)
+		return FindOneOldByIdAndExecution(id, execution)
 	}
 	if err != nil {
-		return nil, errors.Wrap(err, "error finding task by id and execution")
+		return nil, errors.Wrap(err, "finding task by id and execution")
 	}
 
 	return task, nil
 }
 
-// FindOneOldNoMerge is a FindOneOld without merging test results.
-func FindOneOldNoMerge(query db.Q) (*Task, error) {
+// FindOneIdAndExecutionWithDisplayStatus returns a single task with the given
+// ID and execution, with display statuses added.
+func FindOneIdAndExecutionWithDisplayStatus(id string, execution *int) (*Task, error) {
+	tasks := []Task{}
+	match := bson.M{
+		IdKey: id,
+	}
+	if execution != nil {
+		match[ExecutionKey] = *execution
+	}
+	pipeline := []bson.M{
+		{"$match": match},
+		addDisplayStatus,
+	}
+	if err := Aggregate(pipeline, &tasks); err != nil {
+		return nil, errors.Wrap(err, "finding task")
+	}
+	if len(tasks) != 0 {
+		t := tasks[0]
+		return &t, nil
+	}
+
+	return FindOneOldByIdAndExecutionWithDisplayStatus(id, execution)
+}
+
+// FindOneOldByIdAndExecutionWithDisplayStatus returns a single task with the
+// given ID and execution from the old tasks collection, with display statuses
+// added.
+func FindOneOldByIdAndExecutionWithDisplayStatus(id string, execution *int) (*Task, error) {
+	tasks := []Task{}
+	match := bson.M{
+		OldTaskIdKey: id,
+	}
+	if execution != nil {
+		match[ExecutionKey] = *execution
+	}
+	pipeline := []bson.M{
+		{"$match": match},
+		addDisplayStatus,
+	}
+
+	if err := db.Aggregate(OldCollection, pipeline, &tasks); err != nil {
+		return nil, errors.Wrap(err, "finding task")
+	}
+	if len(tasks) != 0 {
+		t := tasks[0]
+		return &t, nil
+	}
+
+	return nil, errors.New("task not found")
+}
+
+// FindOneOld returns a single task from the old tasks collection that
+// satifisfies the given query.
+func FindOneOld(query db.Q) (*Task, error) {
 	task := &Task{}
 	err := db.FindOneQ(OldCollection, query, task)
 	if adb.ResultsNotFound(err) {
@@ -826,15 +1111,18 @@ func FindOneOldNoMerge(query db.Q) (*Task, error) {
 	return task, err
 }
 
-// FindOneOldNoMergeByIdAndExecution finds a task from the old tasks collection without test results.
-func FindOneOldNoMergeByIdAndExecution(id string, execution int) (*Task, error) {
+// FindOneOldByIdAndExecution returns a single task from the old tasks
+// collection with the given ID and execution.
+func FindOneOldByIdAndExecution(id string, execution int) (*Task, error) {
 	query := db.Query(bson.M{
 		OldTaskIdKey: id,
 		ExecutionKey: execution,
 	})
-	return FindOneOldNoMerge(query)
+	return FindOneOld(query)
 }
 
+// FindOneIdWithFields returns a single task with the given ID, projecting only
+// the given fields.
 func FindOneIdWithFields(id string, projected ...string) (*Task, error) {
 	task := &Task{}
 	query := db.Query(bson.M{IdKey: id})
@@ -873,6 +1161,8 @@ func findAllTaskIDs(q db.Q) ([]string, error) {
 	return ids, nil
 }
 
+// FindStuckDispatching returns all "stuck" tasks. A task is considered stuck
+// if it has a "dispatched" status for more than 30 minutes.
 func FindStuckDispatching() ([]Task, error) {
 	tasks, err := FindAll(db.Query(bson.M{
 		StatusKey:       evergreen.TaskDispatched,
@@ -941,36 +1231,16 @@ func FindMergeTaskForVersion(versionId string) (*Task, error) {
 	return task, err
 }
 
-// FindOneOld returns one task from the old tasks collection that satisfies the query.
-func FindOneOld(query db.Q) (*Task, error) {
-	task, err := FindOneOldNoMerge(query)
-	if err != nil {
-		return nil, errors.Wrap(err, "error finding task")
-	}
-	if task == nil {
-		return nil, nil
-	}
-	if err = task.MergeNewTestResults(); err != nil {
-		return nil, errors.Wrap(err, "errors merging new test results")
-	}
-	return task, err
-}
-
-// FindOld returns all task from the old tasks collection that satisfies the query.
+// FindOld returns all non-display tasks from the old tasks collection that
+// satisfy the given query.
 func FindOld(query db.Q) ([]Task, error) {
 	tasks := []Task{}
 	err := db.FindAllQ(OldCollection, query, &tasks)
 	if adb.ResultsNotFound(err) {
 		return nil, nil
 	}
-	for i, task := range tasks {
-		if err = task.MergeNewTestResults(); err != nil {
-			return nil, errors.Wrap(err, "error merging new test results")
-		}
-		tasks[i] = task
-	}
 
-	// remove display tasks from results
+	// Remove display tasks from results.
 	for i := len(tasks) - 1; i >= 0; i-- {
 		t := tasks[i]
 		if t.DisplayOnly {
@@ -980,25 +1250,20 @@ func FindOld(query db.Q) ([]Task, error) {
 	return tasks, err
 }
 
-// FindOldWithDisplayTasks finds display and execution tasks in the old collection
+// FindOldWithDisplayTasks returns all display and execution tasks from the old
+// collection that satisfy the given query.
 func FindOldWithDisplayTasks(query db.Q) ([]Task, error) {
 	tasks := []Task{}
 	err := db.FindAllQ(OldCollection, query, &tasks)
 	if adb.ResultsNotFound(err) {
 		return nil, nil
 	}
-	for i, task := range tasks {
-		if err = task.MergeNewTestResults(); err != nil {
-			return nil, errors.Wrap(err, "error merging new test results")
-		}
-		tasks[i] = task
-	}
 
 	return tasks, err
 }
 
-// FindOneIdOldOrNew attempts to find a given task ID by first looking in the
-// old collection, then the tasks collection
+// FindOneIdOldOrNew returns a single task with the given ID and execution,
+// first looking in the old tasks collection, then the tasks collection.
 func FindOneIdOldOrNew(id string, execution int) (*Task, error) {
 	task, err := FindOneOld(ById(MakeOldID(id, execution)))
 	if task == nil || err != nil {
@@ -1008,8 +1273,8 @@ func FindOneIdOldOrNew(id string, execution int) (*Task, error) {
 	return task, err
 }
 
-// FindOneIdNewOrOld attempts to find a given task ID by first looking in the
-// tasks collection, then the old tasks collection
+// FindOneIdNewOrOld returns a single task with the given ID and execution,
+// first looking in the tasks collection, then the old tasks collection.
 func FindOneIdNewOrOld(id string) (*Task, error) {
 	task, err := FindOne(ById(id))
 	if task == nil || err != nil {
@@ -1092,24 +1357,6 @@ func FindAllOld(query db.Q) ([]Task, error) {
 	return tasks, err
 }
 
-func FindWithDisplayTasks(query db.Q) ([]Task, error) {
-	tasks := []Task{}
-	err := db.FindAllQ(Collection, query, &tasks)
-	if adb.ResultsNotFound(err) {
-		return nil, nil
-	}
-
-	for i, t := range tasks {
-		_, err = t.GetDisplayTask()
-		if err != nil {
-			return nil, errors.Wrap(err, "unable to retrieve parent display task")
-		}
-		tasks[i] = t
-	}
-
-	return tasks, err
-}
-
 // UpdateOne updates one task.
 func UpdateOne(query interface{}, update interface{}) error {
 	return db.Update(
@@ -1155,7 +1402,7 @@ func Count(query db.Q) (int, error) {
 }
 
 func FindProjectForTask(taskID string) (string, error) {
-	t, err := FindOneNoMerge(ById(taskID).Project(bson.M{ProjectKey: 1}))
+	t, err := FindOne(ById(taskID).Project(bson.M{ProjectKey: 1}))
 	if err != nil {
 		return "", err
 	}
@@ -1165,7 +1412,7 @@ func FindProjectForTask(taskID string) (string, error) {
 	return t.Project, nil
 }
 
-func UpdateAllMatchingDependenciesForTask(taskId, dependencyId string, unattainable bool) error {
+func updateAllMatchingDependenciesForTask(taskId, dependencyId string, unattainable bool) error {
 	env := evergreen.GetEnvironment()
 	ctx, cancel := env.Context()
 	defer cancel()
@@ -1220,13 +1467,14 @@ func AbortTasksForVersion(versionId string, taskIds []string, caller string) err
 	return err
 }
 
-func AddHostCreateDetails(taskId, hostId string, hostCreateError error) error {
+func AddHostCreateDetails(taskId, hostId string, execution int, hostCreateError error) error {
 	if hostCreateError == nil {
 		return nil
 	}
 	err := UpdateOne(
 		bson.M{
-			IdKey: taskId,
+			IdKey:        taskId,
+			ExecutionKey: execution,
 		},
 		bson.M{"$push": bson.M{
 			HostCreateDetailsKey: HostCreateDetail{HostId: hostId, Error: hostCreateError.Error()},

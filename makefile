@@ -5,50 +5,48 @@ tmpDir := $(abspath $(buildDir)/tmp)
 nodeDir := public
 packages := $(name) agent agent-command agent-util agent-internal agent-internal-client api apimodels operations cloud cloud-userdata
 packages += db util plugin units graphql thirdparty thirdparty-docker auth scheduler model validator service service-testutil repotracker cmd-codegen-core mock
-packages += model-annotations model-patch model-artifact model-host model-build model-event model-task model-user model-distro model-manifest model-testresult
+packages += model-annotations model-patch model-artifact model-host model-pod model-build model-event model-task model-user model-distro model-manifest model-testresult
 packages += operations-metabuild-generator operations-metabuild-model model-commitqueue
 packages += rest-client rest-data rest-route rest-model migrations trigger model-alertrecord model-notification model-stats model-reliability
-lintOnlyPackages := testutil model-manifest
+lintOnlyPackages := testutil model-manifest model-testutil
 orgPath := github.com/evergreen-ci
 projectPath := $(orgPath)/$(name)
 evghome := $(abspath .)
 ifeq ($(OS),Windows_NT)
 	evghome := $(shell cygpath -m $(evghome))
 endif
-lobsterTempDir := $(buildDir)/lobster-temp
+lobsterTempDir := $(abspath $(buildDir))/lobster-temp
 # end project configuration
 
 # start go runtime settings
-ifneq (,$(GO_BIN_PATH))
-  gobin := $(GO_BIN_PATH)
- else
-  gobin := $(shell if [ -x /opt/golang/go1.16/bin/go ]; then echo /opt/golang/go1.16/bin/go; fi)
-  ifeq (,$(gobin))
-    gobin := go
-  endif
+gobin := go
+ifneq (,$(GOROOT))
+gobin := $(GOROOT)/bin/go
 endif
 
-foo:
-	@echo $(currDir)
-
 gopath := $(GOPATH)
-gocache := $(abspath $(buildDir)/.cache)
 ifeq ($(OS),Windows_NT)
-	ifneq (,$(gopath))
-		gopath := $(shell cygpath -m $(gopath))
-	endif
-	gocache := $(shell cygpath -m $(gocache))
+gobin := $(shell cygpath $(gobin))
+gopath := $(shell cygpath -m $(gopath))
+export GOCACHE := $(shell cygpath -m $(abspath $(buildDir)/.cache))
+export GOLANGCI_LINT_CACHE := $(shell cygpath -m $(abspath $(buildDir)/.lint-cache))
+export GOPATH := $(gopath)
+export GOROOT := $(shell cygpath -m $(GOROOT))
 endif
 
 export GO111MODULE := off
-export GOPATH=$(gopath)
-export GOCACHE := $(gocache)
+ifneq (,$(RACE_DETECTOR))
+# cgo is required for using the race detector.
+export CGO_ENABLED=1
+else
+export CGO_ENABLED=0
+endif
 # end go runtime settings
 
 
 # start evergreen specific configuration
 
-unixPlatforms := linux_amd64 darwin_amd64 $(if $(STAGING_ONLY),,linux_s390x linux_arm64 linux_ppc64le)
+unixPlatforms := linux_amd64 darwin_amd64 $(if $(STAGING_ONLY),,darwin_arm64 linux_s390x linux_arm64 linux_ppc64le)
 windowsPlatforms := windows_amd64
 
 
@@ -91,7 +89,7 @@ endif
 cli:$(localClientBinary)
 clis:$(clientBinaries)
 $(clientBuildDir)/%/evergreen $(clientBuildDir)/%/evergreen.exe:$(buildDir)/build-cross-compile $(srcFiles)
-	@./$(buildDir)/build-cross-compile -buildName=$* -ldflags="$(ldFlags)" -goBinary="$(gobin)" $(if $(RACE_DETECTOR),-race ,)-directory=$(clientBuildDir) -source=$(clientSource) -output=$@
+	@./$(buildDir)/build-cross-compile -buildName=$* -ldflags="$(ldFlags)" -goBinary="$(gobin)" -directory=$(clientBuildDir) -source=$(clientSource) -output=$@
 # Targets to upload the CLI binaries to S3.
 $(buildDir)/upload-s3:cmd/upload-s3/upload-s3.go
 	@$(gobin) build -o $@ $<
@@ -173,7 +171,7 @@ $(buildDir)/.lintSetup:$(buildDir)/golangci-lint
 	@mkdir -p $(buildDir)
 	@touch $@
 $(buildDir)/golangci-lint:
-	@curl --retry 10 --retry-max-time 120 -sSfL https://install.goreleaser.com/github.com/golangci/golangci-lint.sh | sh -s -- -b $(buildDir) v1.30.0 >/dev/null 2>&1 && touch $@
+	@curl --retry 10 --retry-max-time 120 -sSfL https://install.goreleaser.com/github.com/golangci/golangci-lint.sh | sh -s -- -b $(buildDir) v1.40.0 >/dev/null 2>&1 && touch $@
 $(buildDir)/run-linter:cmd/run-linter/run-linter.go $(buildDir)/.lintSetup
 	@mkdir -p $(buildDir)
 	$(gobin) build -ldflags "-w" -o $@ $<
@@ -197,7 +195,11 @@ $(buildDir)/go-test-config:cmd/go-test-config/make-config.go
 #end generated config
 
 # generate rest model
-generate-rest-model:$(buildDir)/codegen
+# build-codegen is a special target to build all packages before performing code generation so that goimports can
+# properly locate package imports.
+build-codegen:
+	$(gobin) build $(subst $(name),,$(subst -,/,$(foreach target,$(packages),./$(target))))
+generate-rest-model:$(buildDir)/codegen build-codegen
 	./$(buildDir)/codegen --config "rest/model/schema/type_mapping.yml" --schema "rest/model/schema/rest_model.graphql" --model "rest/model/generated.go" --helper "rest/model/generated_converters.go"
 $(buildDir)/codegen:
 	$(gobin) build -o $(buildDir)/codegen cmd/codegen/entry.go
@@ -264,6 +266,21 @@ vendor-clean:
 	rm -rf vendor/github.com/docker/docker/vendor/golang.org/x/oauth2/
 	rm -rf vendor/github.com/docker/docker/vendor/google.golang.org/genproto/
 	rm -rf vendor/github.com/docker/docker/vendor/google.golang.org/grpc/
+	rm -rf vendor/github.com/evergreen-ci/cocoa/vendor/github.com/evergreen-ci/gimlet/
+	rm -rf vendor/github.com/evergreen-ci/cocoa/vendor/github.com/evergreen-ci/utility/
+	rm -rf vendor/github.com/evergreen-ci/cocoa/vendor/github.com/mongodb/grip/
+	rm -rf vendor/github.com/evergreen-ci/cocoa/vendor/github.com/aws/aws-sdk-go/
+	rm -rf vendor/github.com/evergreen-ci/cocoa/vendor/github.com/davecgh/go-spew/
+	rm -rf vendor/github.com/evergreen-ci/cocoa/vendor/github.com/jmespath/go-jmespath/
+	rm -rf vendor/github.com/evergreen-ci/cocoa/vendor/github.com/jpillora/backoff/
+	rm -rf vendor/github.com/evergreen-ci/cocoa/vendor/github.com/pkg/errors/
+	rm -rf vendor/github.com/evergreen-ci/cocoa/vendor/github.com/pmezard/go-difflib/
+	rm -rf vendor/github.com/evergreen-ci/cocoa/vendor/github.com/PuerkitoBio/rehttp/
+	rm -rf vendor/github.com/evergreen-ci/cocoa/vendor/github.com/stretchr/objx/
+	rm -rf vendor/github.com/evergreen-ci/cocoa/vendor/github.com/stretchr/testify/
+	rm -rf vendor/github.com/evergreen-ci/cocoa/vendor/golang.org/x/oauth2/
+	rm -rf vendor/github.com/evergreen-ci/cocoa/vendor/golang.org/x/net/
+	rm -rf vendor/github.com/evergreen-ci/cocoa/vendor/gopkg.in/yaml.v3/
 	rm -rf vendor/github.com/evergreen-ci/certdepot/vendor/github.com/mongodb/anser/
 	rm -rf vendor/github.com/evergreen-ci/certdepot/vendor/github.com/mongodb/grip/
 	rm -rf vendor/github.com/evergreen-ci/certdepot/vendor/github.com/pkg/errors/
@@ -288,15 +305,18 @@ vendor-clean:
 	rm -rf vendor/github.com/evergreen-ci/pail/vendor/github.com/stretchr/testify/
 	rm -rf vendor/github.com/evergreen-ci/pail/vendor/go.mongodb.org/mongo-driver/
 	rm -rf vendor/github.com/evergreen-ci/pail/vendor/gopkg.in/mgo.v2/
-	rm -rf vendor/github.com/evergreen-ci/timber/vendor/github.com/evergreen-ci/aviation/vendor/github.com/evergreen-ci/gimlet/
+	rm -rf vendor/github.com/evergreen-ci/timber/vendor/github.com/evergreen-ci/gimlet/
 	rm -rf vendor/github.com/evergreen-ci/timber/vendor/github.com/evergreen-ci/juniper/
+	rm -rf vendor/github.com/evergreen-ci/timber/vendor/github.com/evergreen-ci/utility/
 	rm -rf vendor/github.com/evergreen-ci/timber/vendor/github.com/golang/protobuf/
+	rm -rf vendor/github.com/evergreen-ci/timber/vendor/github.com/jpillora/
 	rm -rf vendor/github.com/evergreen-ci/timber/vendor/github.com/mongodb/grip/
 	rm -rf vendor/github.com/evergreen-ci/timber/vendor/github.com/pkg/errors/
 	rm -rf vendor/github.com/evergreen-ci/timber/vendor/github.com/stretchr/testify/
 	rm -rf vendor/github.com/evergreen-ci/timber/vendor/github.com/PuerkitoBio/rehttp/
 	rm -rf vendor/github.com/evergreen-ci/timber/vendor/go.mongodb.org/mongo-driver/
 	rm -rf vendor/github.com/evergreen-ci/timber/vendor/golang.org/x/net/
+	rm -rf vendor/github.com/evergreen-ci/timber/vendor/golang.org/x/oauth2/
 	rm -rf vendor/github.com/evergreen-ci/timber/vendor/golang.org/x/sys/
 	rm -rf vendor/github.com/evergreen-ci/timber/vendor/golang.org/x/text/
 	rm -rf vendor/github.com/evergreen-ci/timber/vendor/google.golang.org/genproto/
@@ -386,6 +406,7 @@ vendor-clean:
 	rm -rf vendor/github.com/mongodb/jasper/vendor/google.golang.org/grpc/
 	rm -rf vendor/github.com/vmware/govmomi/vendor/github.com/google/uuid/
 	rm -rf vendor/github.com/shirou/gopsutil/host/host_linux_riscv64.go
+	rm -rf vendor/github.com/mongodb/grip/vendor/github.com/tklauser/go-sysconf/zsysconf_values_linux_riscv64.go
 	rm -rf vendor/github.com/smartystreets/goconvey/web/
 	rm -rf vendor/github.com/square/certstrap/vendor/github.com/urfave/cli/
 	rm -rf vendor/github.com/square/certstrap/vendor/golang.org/x/sys/unix/
@@ -429,9 +450,13 @@ endif
 # of goimports when running test-rest-model in evergreen. As long as you have GOROOT
 # set to the directory containing your same version (1.9+) of the go binary, goimports
 # will work without this workaround
+toolsPath := $(gopath)/src/golang.org/x/tools
+ifeq ($(OS),Windows_NT)
+toolsPath := $(shell cygpath -m $(toolsPath))
+endif
 get-go-imports:
 	$(gobin) get -u golang.org/x/tools/imports
-	cd $(gopath)/src/golang.org/x/tools && git reset 727c06e3f111405bd52063f6120c7d72c3ba896e --hard
+	cd $(toolsPath) && git reset 727c06e3f111405bd52063f6120c7d72c3ba896e --hard
 # end vendoring tooling configuration
 
 
@@ -498,15 +523,22 @@ $(tmpDir):$(buildDir)
 	mkdir -p $@
 $(buildDir)/output.%.test:$(tmpDir) .FORCE
 	$(testRunEnv) $(gobin) test $(testArgs) ./$(if $(subst $(name),,$*),$(subst -,/,$*),) 2>&1 | tee $@
+# Codegen is special because it requires that the repository be compiled for goimports to resolve imports properly.
+$(buildDir)/output.cmd-codegen-core.test: $(tmpDir) build-codegen .FORCE
+	$(testRunEnv) $(gobin) test $(testArgs) ./$(if $(subst $(name),,$*),$(subst -,/,$*),) 2>&1 | tee $@
 $(buildDir)/output-dlv.%.test:$(tmpDir) .FORCE
 	$(testRunEnv) dlv test $(testArgs) ./$(if $(subst $(name),,$*),$(subst -,/,$*),) -- $(dlvArgs) 2>&1 | tee $@
 $(buildDir)/output.%.coverage:$(tmpDir) .FORCE
 	$(testRunEnv) $(gobin) test $(testArgs) ./$(if $(subst $(name),,$*),$(subst -,/,$*),) -covermode=count -coverprofile $@ | tee $(buildDir)/output.$*.test
 	@-[ -f $@ ] && go tool cover -func=$@ | sed 's%$(projectPath)/%%' | column -t
 #  targets to generate gotest output from the linter.
-# We have to handle the PATH specially for CI, because if the PATH has a different version of Go in it, it'll break.
-$(buildDir)/output.%.lint:$(buildDir)/run-linter $(testSrcFiles) .FORCE
-	@$(if $(GO_BIN_PATH), PATH="$(shell dirname $(GO_BIN_PATH)):$(PATH)") ./$< --output=$@ --lintBin="$(buildDir)/golangci-lint" --lintArgs="--timeout=2m" --customLinters="$(gopath)/bin/evg-lint -set_exit_status" --packages='$*'
+ifneq (go,$(gobin))
+# We have to handle the PATH specially for linting in CI, because if the PATH has a different version of the Go
+# binary in it, the linter won't work properly.
+lintEnvVars := PATH="$(shell dirname $(gobin)):$(PATH)"
+endif
+$(buildDir)/output.%.lint: $(buildDir)/run-linter .FORCE
+	@$(lintEnvVars) ./$< --output=$@ --lintBin=$(buildDir)/golangci-lint --lintArgs="--timeout=2m" --customLinters="$(gopath)/bin/evg-lint -set_exit_status" --packages='$*'
 $(buildDir)/output.%.coverage.html:$(buildDir)/output.%.coverage
 	$(gobin) tool cover -html=$< -o $@
 # end test and coverage artifacts
@@ -546,8 +578,14 @@ get-mongodb:mongodb/.get-mongodb
 start-mongod:mongodb/.get-mongodb
 	./mongodb/mongod --dbpath ./mongodb/db_files --port 27017 --replSet evg --smallfiles --oplogSize 10
 	@echo "waiting for mongod to start up"
+start-mongod-auth:mongodb/.get-mongodb
+	./mongodb/mongod --auth --dbpath ./mongodb/db_files --port 27017 --replSet evg --oplogSize 10
+	@echo "starting up mongod with auth"
 init-rs:mongodb/.get-mongodb
 	./mongodb/mongo --eval 'rs.initiate()'
+	sleep 30
+init-auth:mongodb/.get-mongodb
+	./mongodb/mongo --host `./mongodb/mongo --quiet --eval "db.isMaster()['primary']"` cmd/mongo-auth/create_auth_user.js
 check-mongod:mongodb/.get-mongodb
 	./mongodb/mongo --nodb --eval "assert.soon(function(x){try{var d = new Mongo(\"localhost:27017\"); return true}catch(e){return false}}, \"timed out connecting\")"
 	@echo "mongod is up"
@@ -557,4 +595,4 @@ check-mongod:mongodb/.get-mongodb
 # configure special (and) phony targets
 .FORCE:
 .PHONY:$(phony) .FORCE
-.DEFAULT_GOAL:build
+.DEFAULT_GOAL := build

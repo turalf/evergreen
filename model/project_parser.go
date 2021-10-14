@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io/ioutil"
 	"reflect"
 	"strings"
 	"time"
 
+	"github.com/evergreen-ci/evergreen"
 	"github.com/evergreen-ci/evergreen/db"
 	"github.com/evergreen-ci/evergreen/model/patch"
 	"github.com/evergreen-ci/evergreen/thirdparty"
@@ -18,10 +20,10 @@ import (
 	"github.com/pkg/errors"
 	"go.mongodb.org/mongo-driver/bson"
 	mgobson "gopkg.in/mgo.v2/bson"
-	"gopkg.in/yaml.v2"
 )
 
 const LoadProjectError = "load project error(s)"
+const TranslateProjectError = "error translating project"
 
 // This file contains the infrastructure for turning a YAML project configuration
 // into a usable Project struct. A basic overview of the project parsing process is:
@@ -49,61 +51,76 @@ const LoadProjectError = "load project error(s)"
 // configuration YAML. It implements the Unmarshaler interface
 // to allow for flexible handling.
 type ParserProject struct {
-	Id                 string                     `yaml:"_id" bson:"_id"` // should be the same as the version's ID
-	ConfigUpdateNumber int                        `yaml:"config_number,omitempty" bson:"config_number,omitempty"`
-	Enabled            bool                       `yaml:"enabled,omitempty" bson:"enabled,omitempty"`
-	Stepback           bool                       `yaml:"stepback,omitempty" bson:"stepback,omitempty"`
-	PreErrorFailsTask  bool                       `yaml:"pre_error_fails_task,omitempty" bson:"pre_error_fails_task,omitempty"`
-	OomTracker         bool                       `yaml:"oom_tracker,omitempty" bson:"oom_tracker,omitempty"`
-	BatchTime          int                        `yaml:"batchtime,omitempty" bson:"batchtime,omitempty"`
-	Owner              string                     `yaml:"owner,omitempty" bson:"owner,omitempty"`
-	Repo               string                     `yaml:"repo,omitempty" bson:"repo,omitempty"`
-	RemotePath         string                     `yaml:"remote_path,omitempty" bson:"remote_path,omitempty"`
-	Branch             string                     `yaml:"branch,omitempty" bson:"branch,omitempty"`
-	Identifier         string                     `yaml:"identifier,omitempty" bson:"identifier,omitempty"`
-	DisplayName        string                     `yaml:"display_name,omitempty" bson:"display_name,omitempty"`
-	CommandType        string                     `yaml:"command_type,omitempty" bson:"command_type,omitempty"`
-	Ignore             parserStringSlice          `yaml:"ignore,omitempty" bson:"ignore,omitempty"`
-	Parameters         []ParameterInfo            `yaml:"parameters,omitempty" bson:"parameters,omitempty"`
-	Pre                *YAMLCommandSet            `yaml:"pre,omitempty" bson:"pre,omitempty"`
-	Post               *YAMLCommandSet            `yaml:"post,omitempty" bson:"post,omitempty"`
-	Timeout            *YAMLCommandSet            `yaml:"timeout,omitempty" bson:"timeout,omitempty"`
-	EarlyTermination   *YAMLCommandSet            `yaml:"early_termination,omitempty" bson:"early_termination,omitempty"`
-	CallbackTimeout    int                        `yaml:"callback_timeout_secs,omitempty" bson:"callback_timeout_secs,omitempty"`
-	Modules            []Module                   `yaml:"modules,omitempty" bson:"modules,omitempty"`
-	BuildVariants      []parserBV                 `yaml:"buildvariants,omitempty" bson:"buildvariants,omitempty"`
-	Functions          map[string]*YAMLCommandSet `yaml:"functions,omitempty" bson:"functions,omitempty"`
-	TaskGroups         []parserTaskGroup          `yaml:"task_groups,omitempty" bson:"task_groups,omitempty"`
-	Tasks              []parserTask               `yaml:"tasks,omitempty" bson:"tasks,omitempty"`
-	ExecTimeoutSecs    int                        `yaml:"exec_timeout_secs,omitempty" bson:"exec_timeout_secs,omitempty"`
-	Loggers            *LoggerConfig              `yaml:"loggers,omitempty" bson:"loggers,omitempty"`
-	CreateTime         time.Time                  `yaml:"create_time,omitempty" bson:"create_time,omitempty"`
+	// Id and ConfigdUpdateNumber are not pointers because they are only used internally
+	Id                     string                         `yaml:"_id" bson:"_id"` // should be the same as the version's ID
+	ConfigUpdateNumber     int                            `yaml:"config_number,omitempty" bson:"config_number,omitempty"`
+	Enabled                *bool                          `yaml:"enabled,omitempty" bson:"enabled,omitempty"`
+	Stepback               *bool                          `yaml:"stepback,omitempty" bson:"stepback,omitempty"`
+	PreErrorFailsTask      *bool                          `yaml:"pre_error_fails_task,omitempty" bson:"pre_error_fails_task,omitempty"`
+	PostErrorFailsTask     *bool                          `yaml:"post_error_fails_task,omitempty" bson:"post_error_fails_task,omitempty"`
+	OomTracker             *bool                          `yaml:"oom_tracker,omitempty" bson:"oom_tracker,omitempty"`
+	BatchTime              *int                           `yaml:"batchtime,omitempty" bson:"batchtime,omitempty"`
+	Owner                  *string                        `yaml:"owner,omitempty" bson:"owner,omitempty"`
+	Repo                   *string                        `yaml:"repo,omitempty" bson:"repo,omitempty"`
+	RemotePath             *string                        `yaml:"remote_path,omitempty" bson:"remote_path,omitempty"`
+	Branch                 *string                        `yaml:"branch,omitempty" bson:"branch,omitempty"`
+	Identifier             *string                        `yaml:"identifier,omitempty" bson:"identifier,omitempty"`
+	DisplayName            *string                        `yaml:"display_name,omitempty" bson:"display_name,omitempty"`
+	CommandType            *string                        `yaml:"command_type,omitempty" bson:"command_type,omitempty"`
+	Ignore                 parserStringSlice              `yaml:"ignore,omitempty" bson:"ignore,omitempty"`
+	Parameters             []ParameterInfo                `yaml:"parameters,omitempty" bson:"parameters,omitempty"`
+	Pre                    *YAMLCommandSet                `yaml:"pre,omitempty" bson:"pre,omitempty"`
+	Post                   *YAMLCommandSet                `yaml:"post,omitempty" bson:"post,omitempty"`
+	Timeout                *YAMLCommandSet                `yaml:"timeout,omitempty" bson:"timeout,omitempty"`
+	EarlyTermination       *YAMLCommandSet                `yaml:"early_termination,omitempty" bson:"early_termination,omitempty"`
+	CallbackTimeout        *int                           `yaml:"callback_timeout_secs,omitempty" bson:"callback_timeout_secs,omitempty"`
+	Modules                []Module                       `yaml:"modules,omitempty" bson:"modules,omitempty"`
+	BuildVariants          []parserBV                     `yaml:"buildvariants,omitempty" bson:"buildvariants,omitempty"`
+	Functions              map[string]*YAMLCommandSet     `yaml:"functions,omitempty" bson:"functions,omitempty"`
+	TaskGroups             []parserTaskGroup              `yaml:"task_groups,omitempty" bson:"task_groups,omitempty"`
+	Tasks                  []parserTask                   `yaml:"tasks,omitempty" bson:"tasks,omitempty"`
+	ExecTimeoutSecs        *int                           `yaml:"exec_timeout_secs,omitempty" bson:"exec_timeout_secs,omitempty"`
+	Loggers                *LoggerConfig                  `yaml:"loggers,omitempty" bson:"loggers,omitempty"`
+	CreateTime             time.Time                      `yaml:"create_time,omitempty" bson:"create_time,omitempty"`
+	TaskAnnotationSettings *evergreen.AnnotationsSettings `yaml:"task_annotation_settings,omitempty" bson:"task_annotation_settings,omitempty"`
+	BuildBaronSettings     *evergreen.BuildBaronSettings  `yaml:"build_baron_settings,omitempty" bson:"build_baron_settings,omitempty"`
+	PerfEnabled            *bool                          `yaml:"perf_enabled,omitempty" bson:"perf_enabled,omitempty"`
+
+	// The below fields can be set for the ProjectRef struct on the project page, or in the project config yaml.
+	// Values for the below fields set on this struct will take precedence over the project page and will
+	// be the configs used for a given project during runtime.
+	DeactivatePrevious *bool `yaml:"deactivate_previous" bson:"deactivate_previous,omitempty"`
+
+	// List of yamls to merge
+	Include []Include `yaml:"include,omitempty" bson:"include,omitempty"`
 
 	// Matrix code
 	Axes []matrixAxis `yaml:"axes,omitempty" bson:"axes,omitempty"`
-}
+} // End of ParserProject struct
+// Comment above is used by the linter to detect the end of the struct.
 
 type parserTaskGroup struct {
-	Name                  string             `yaml:"name,omitempty" bson:"name,omitempty"`
-	Priority              int64              `yaml:"priority,omitempty" bson:"priority,omitempty"`
-	Patchable             *bool              `yaml:"patchable,omitempty" bson:"patchable,omitempty"`
-	PatchOnly             *bool              `yaml:"patch_only,omitempty" bson:"patch_only,omitempty"`
-	AllowForGitTag        *bool              `yaml:"allow_for_git_tag,omitempty" bson:"allow_for_git_tag,omitempty"`
-	GitTagOnly            *bool              `yaml:"git_tag_only,omitempty" bson:"git_tag_only,omitempty"`
-	ExecTimeoutSecs       int                `yaml:"exec_timeout_secs,omitempty" bson:"exec_timeout_secs,omitempty"`
-	Stepback              *bool              `yaml:"stepback,omitempty" bson:"stepback,omitempty"`
-	MaxHosts              int                `yaml:"max_hosts,omitempty" bson:"max_hosts,omitempty"`
-	SetupGroupFailTask    bool               `yaml:"setup_group_can_fail_task,omitempty" bson:"setup_group_can_fail_task,omitempty"`
-	SetupGroupTimeoutSecs int                `yaml:"setup_group_timeout_secs,omitempty" bson:"setup_group_timeout_secs,omitempty"`
-	SetupGroup            *YAMLCommandSet    `yaml:"setup_group,omitempty" bson:"setup_group,omitempty"`
-	TeardownGroup         *YAMLCommandSet    `yaml:"teardown_group,omitempty" bson:"teardown_group,omitempty"`
-	SetupTask             *YAMLCommandSet    `yaml:"setup_task,omitempty" bson:"setup_task,omitempty"`
-	TeardownTask          *YAMLCommandSet    `yaml:"teardown_task,omitempty" bson:"teardown_task,omitempty"`
-	Timeout               *YAMLCommandSet    `yaml:"timeout,omitempty" bson:"timeout,omitempty"`
-	Tasks                 []string           `yaml:"tasks,omitempty" bson:"tasks,omitempty"`
-	DependsOn             parserDependencies `yaml:"depends_on,omitempty" bson:"depends_on,omitempty"`
-	Tags                  parserStringSlice  `yaml:"tags,omitempty" bson:"tags,omitempty"`
-	ShareProcs            bool               `yaml:"share_processes,omitempty" bson:"share_processes,omitempty"`
+	Name                    string             `yaml:"name,omitempty" bson:"name,omitempty"`
+	Priority                int64              `yaml:"priority,omitempty" bson:"priority,omitempty"`
+	Patchable               *bool              `yaml:"patchable,omitempty" bson:"patchable,omitempty"`
+	PatchOnly               *bool              `yaml:"patch_only,omitempty" bson:"patch_only,omitempty"`
+	AllowForGitTag          *bool              `yaml:"allow_for_git_tag,omitempty" bson:"allow_for_git_tag,omitempty"`
+	GitTagOnly              *bool              `yaml:"git_tag_only,omitempty" bson:"git_tag_only,omitempty"`
+	ExecTimeoutSecs         int                `yaml:"exec_timeout_secs,omitempty" bson:"exec_timeout_secs,omitempty"`
+	Stepback                *bool              `yaml:"stepback,omitempty" bson:"stepback,omitempty"`
+	MaxHosts                int                `yaml:"max_hosts,omitempty" bson:"max_hosts,omitempty"`
+	SetupGroupFailTask      bool               `yaml:"setup_group_can_fail_task,omitempty" bson:"setup_group_can_fail_task,omitempty"`
+	TeardownTaskCanFailTask bool               `yaml:"teardown_task_can_fail_task,omitempty" bson:"teardown_task_can_fail_task,omitempty"`
+	SetupGroupTimeoutSecs   int                `yaml:"setup_group_timeout_secs,omitempty" bson:"setup_group_timeout_secs,omitempty"`
+	SetupGroup              *YAMLCommandSet    `yaml:"setup_group,omitempty" bson:"setup_group,omitempty"`
+	TeardownGroup           *YAMLCommandSet    `yaml:"teardown_group,omitempty" bson:"teardown_group,omitempty"`
+	SetupTask               *YAMLCommandSet    `yaml:"setup_task,omitempty" bson:"setup_task,omitempty"`
+	TeardownTask            *YAMLCommandSet    `yaml:"teardown_task,omitempty" bson:"teardown_task,omitempty"`
+	Timeout                 *YAMLCommandSet    `yaml:"timeout,omitempty" bson:"timeout,omitempty"`
+	Tasks                   []string           `yaml:"tasks,omitempty" bson:"tasks,omitempty"`
+	DependsOn               parserDependencies `yaml:"depends_on,omitempty" bson:"depends_on,omitempty"`
+	Tags                    parserStringSlice  `yaml:"tags,omitempty" bson:"tags,omitempty"`
+	ShareProcs              bool               `yaml:"share_processes,omitempty" bson:"share_processes,omitempty"`
 }
 
 func (ptg *parserTaskGroup) name() string   { return ptg.Name }
@@ -143,7 +160,8 @@ func (pp *ParserProject) MarshalYAML() (interface{}, error) {
 		}
 	}
 
-	return pp, nil
+	// returning a pointer causes MarshalYAML to get stuck in infinite recursion
+	return *pp, nil
 }
 
 type displayTask struct {
@@ -317,6 +335,8 @@ type parserBV struct {
 	Tasks         parserBVTaskUnits  `yaml:"tasks,omitempty" bson:"tasks,omitempty"`
 	DisplayTasks  []displayTask      `yaml:"display_tasks,omitempty" bson:"display_tasks,omitempty"`
 	DependsOn     parserDependencies `yaml:"depends_on,omitempty" bson:"depends_on,omitempty"`
+	// If Activate is set to false, then we don't initially activate the build variant.
+	Activate *bool `yaml:"activate,omitempty" bson:"activate,omitempty"`
 
 	// internal matrix stuff
 	MatrixId  string      `yaml:"matrix_id,omitempty" bson:"matrix_id,omitempty"`
@@ -364,6 +384,30 @@ func (pbv *parserBV) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	return nil
 }
 
+// canMerge checks that all fields are empty besides name and tasks;
+// otherwise, the variant is being defined more than once.
+func (pbv *parserBV) canMerge() bool {
+	return pbv.Name != "" &&
+		len(pbv.Tasks) != 0 &&
+		pbv.DisplayName == "" &&
+		pbv.Expansions == nil &&
+		pbv.Tags == nil &&
+		pbv.Modules == nil &&
+		!pbv.Disabled &&
+		!pbv.Push &&
+		pbv.BatchTime == nil &&
+		pbv.CronBatchTime == "" &&
+		pbv.Stepback == nil &&
+		pbv.RunOn == nil &&
+		pbv.DisplayTasks == nil &&
+		pbv.DependsOn == nil &&
+		pbv.Activate == nil &&
+		pbv.MatrixId == "" &&
+		pbv.MatrixVal == nil &&
+		pbv.Matrix == nil &&
+		pbv.MatrixRules == nil
+}
+
 // parserBVTaskUnit is a helper type storing intermediary variant task configurations.
 type parserBVTaskUnit struct {
 	Name             string             `yaml:"name,omitempty" bson:"name,omitempty"`
@@ -385,6 +429,8 @@ type parserBVTaskUnit struct {
 	// If CronBatchTime is not empty, then override the project settings with cron syntax,
 	// with BatchTime and CronBatchTime being mutually exclusive.
 	CronBatchTime string `yaml:"cron,omitempty" bson:"cron,omitempty"`
+	// If Activate is set to false, then we don't initially activate the task.
+	Activate *bool `yaml:"activate,omitempty" bson:"activate,omitempty"`
 }
 
 // UnmarshalYAML allows the YAML parser to read both a single selector string or
@@ -475,7 +521,7 @@ func LoadProjectForVersion(v *Version, id string, shouldSave bool) (*Project, *P
 		if pp.Functions == nil {
 			pp.Functions = map[string]*YAMLCommandSet{}
 		}
-		pp.Identifier = id
+		pp.Identifier = utility.ToStringPtr(id)
 		var p *Project
 		p, err = TranslateProject(pp)
 		return p, pp, err
@@ -485,12 +531,14 @@ func LoadProjectForVersion(v *Version, id string, shouldSave bool) (*Project, *P
 		return nil, nil, errors.New("version has no config")
 	}
 	p := &Project{}
-	pp, err = LoadProjectInto([]byte(v.Config), id, p)
+	// opts empty because project yaml with `include` will not hit this case
+	ctx := context.Background()
+	pp, err = LoadProjectInto(ctx, []byte(v.Config), nil, id, p)
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "error loading project")
 	}
 	pp.Id = v.Id
-	pp.Identifier = id
+	pp.Identifier = utility.ToStringPtr(id)
 	pp.ConfigUpdateNumber = v.ConfigUpdateNumber
 	pp.CreateTime = v.CreateTime
 
@@ -518,11 +566,43 @@ func GetProjectFromBSON(data []byte) (*Project, error) {
 // LoadProjectInto loads the raw data from the config file into project
 // and sets the project's identifier field to identifier. Tags are evaluated. Returns the intermediate step.
 // If reading from a version config, LoadProjectForVersion should be used to persist the resulting parser project.
-func LoadProjectInto(data []byte, identifier string, project *Project) (*ParserProject, error) {
+// opts is used to look up files on github if the main parser project has an Include.
+func LoadProjectInto(ctx context.Context, data []byte, opts *GetProjectOpts, identifier string, project *Project) (*ParserProject, error) {
 	intermediateProject, err := createIntermediateProject(data)
 	if err != nil {
 		return nil, errors.Wrapf(err, LoadProjectError)
 	}
+
+	// return intermediateProject even if we run into issues to show merge progress
+	for _, path := range intermediateProject.Include {
+		if opts == nil {
+			err = errors.New("Trying to open include files with empty opts")
+			grip.Critical(message.NewError(errors.WithStack(err)))
+			return nil, errors.Wrapf(err, LoadProjectError)
+		}
+		opts.RemotePath = path.FileName
+		// read from the patch diff if a change has been made in any of the include files
+		if opts.ReadFileFrom == ReadFromPatch || opts.ReadFileFrom == ReadFromPatchDiff {
+			if opts.PatchOpts.patch != nil && opts.PatchOpts.patch.ConfigChanged(path.FileName) {
+				opts.ReadFileFrom = ReadFromPatchDiff
+			} else {
+				opts.ReadFileFrom = ReadFromPatch
+			}
+		}
+		yaml, err := retrieveFile(ctx, *opts)
+		if err != nil {
+			return intermediateProject, errors.Wrapf(err, LoadProjectError)
+		}
+		add, err := createIntermediateProject(yaml)
+		if err != nil {
+			return intermediateProject, errors.Wrapf(err, LoadProjectError)
+		}
+		err = intermediateProject.mergeMultipleProjectConfigs(add)
+		if err != nil {
+			return intermediateProject, errors.Wrapf(err, LoadProjectError)
+		}
+	}
+	intermediateProject.Include = nil
 
 	// return project even with errors
 	p, err := TranslateProject(intermediateProject)
@@ -530,28 +610,118 @@ func LoadProjectInto(data []byte, identifier string, project *Project) (*ParserP
 		*project = *p
 	}
 	project.Identifier = identifier
-	return intermediateProject, errors.Wrap(err, LoadProjectError)
+	return intermediateProject, errors.Wrapf(err, LoadProjectError)
 }
 
+const (
+	ReadfromGithub    = "github"
+	ReadFromLocal     = "local"
+	ReadFromPatch     = "patch"
+	ReadFromPatchDiff = "patch_diff"
+)
+
 type GetProjectOpts struct {
-	Ref        *ProjectRef
-	RemotePath string
-	Revision   string
-	Token      string
+	Ref          *ProjectRef
+	PatchOpts    *PatchOpts
+	RemotePath   string
+	Revision     string
+	Token        string
+	ReadFileFrom string
+}
+
+type PatchOpts struct {
+	patch *patch.Patch
+	env   evergreen.Environment
+}
+
+func retrieveFile(ctx context.Context, opts GetProjectOpts) ([]byte, error) {
+	if opts.RemotePath == "" && opts.Ref != nil {
+		opts.RemotePath = opts.Ref.RemotePath
+	}
+	switch opts.ReadFileFrom {
+	case ReadFromLocal:
+		fileContents, err := ioutil.ReadFile(opts.RemotePath)
+		if err != nil {
+			return nil, errors.Wrap(err, "error reading project config")
+		}
+		return fileContents, nil
+	case ReadFromPatch:
+		fileContents, err := getFileForPatchDiff(ctx, opts)
+		if err != nil {
+			return nil, errors.Wrapf(err, "could not fetch remote configuration file")
+		}
+		return fileContents, nil
+	case ReadFromPatchDiff:
+		originalConfig, err := getFileForPatchDiff(ctx, opts)
+		if err != nil {
+			return nil, errors.Wrapf(err, "could not fetch remote configuration file")
+		}
+		fileContents, err := MakePatchedConfig(ctx, opts.PatchOpts.env, opts.PatchOpts.patch, opts.RemotePath, string(originalConfig))
+		if err != nil {
+			return nil, errors.Wrapf(err, "could not patch remote configuration file")
+		}
+		return fileContents, nil
+	default:
+		if opts.Token == "" {
+			conf, err := evergreen.GetConfig()
+			if err != nil {
+				return nil, errors.Wrap(err, "can't get evergreen configuration")
+			}
+			ghToken, err := conf.GetGithubOauthToken()
+			if err != nil {
+				return nil, errors.Wrap(err, "can't get Github OAuth token from configuration")
+			}
+			opts.Token = ghToken
+		}
+		configFile, err := thirdparty.GetGithubFile(ctx, opts.Token, opts.Ref.Owner, opts.Ref.Repo, opts.RemotePath, opts.Revision)
+		if err != nil {
+			return nil, errors.Wrapf(err, "error fetching project file for '%s' at '%s'", opts.Ref.Id, opts.Revision)
+		}
+		fileContents, err := base64.StdEncoding.DecodeString(*configFile.Content)
+		if err != nil {
+			return nil, errors.Wrapf(err, "unable to decode config file for '%s'", opts.Ref.Id)
+		}
+		return fileContents, nil
+	}
+}
+
+func getFileForPatchDiff(ctx context.Context, opts GetProjectOpts) ([]byte, error) {
+	if opts.PatchOpts == nil {
+		return nil, errors.New("patch not passed in")
+	}
+	if opts.Ref == nil {
+		return nil, errors.New("project not passed in")
+	}
+	var projectFileBytes []byte
+	githubFile, err := thirdparty.GetGithubFile(ctx, opts.Token, opts.Ref.Owner,
+		opts.Ref.Repo, opts.RemotePath, opts.Revision)
+	if err != nil {
+		// if the project file doesn't exist, but our patch includes a project file,
+		// we try to apply the diff and proceed.
+		if !(opts.PatchOpts.patch.ConfigChanged(opts.RemotePath) && thirdparty.IsFileNotFound(err)) {
+			// return an error if the github error is network/auth-related or we aren't patching the config
+			return nil, errors.Wrapf(err, "Could not get github file at '%s/%s'@%s: %s", opts.Ref.Owner,
+				opts.Ref.Repo, opts.RemotePath, opts.Revision)
+		}
+	} else {
+		// we successfully got the project file in base64, so we decode it
+		projectFileBytes, err = base64.StdEncoding.DecodeString(*githubFile.Content)
+		if err != nil {
+			return nil, errors.Wrapf(err, "Could not decode github file at '%s/%s'@%s: %s", opts.Ref.Owner,
+				opts.Ref.Repo, opts.RemotePath, opts.Revision)
+		}
+	}
+	return projectFileBytes, nil
 }
 
 func GetProjectFromFile(ctx context.Context, opts GetProjectOpts) (*Project, *ParserProject, error) {
-	configFile, err := thirdparty.GetGithubFile(ctx, opts.Token, opts.Ref.Owner, opts.Ref.Repo, opts.RemotePath, opts.Revision)
+	fileContents, err := retrieveFile(ctx, opts)
 	if err != nil {
-		return nil, nil, errors.Wrapf(err, "error fetching project file for '%s' at '%s'", opts.Ref.Id, opts.Revision)
-	}
-	fileContents, err := base64.StdEncoding.DecodeString(*configFile.Content)
-	if err != nil {
-		return nil, nil, errors.Wrapf(err, "unable to decode config file for '%s'", opts.Ref.Id)
+		return nil, nil, err
 	}
 
 	config := Project{}
-	pp, err := LoadProjectInto(fileContents, opts.Ref.Id, &config)
+	pp, err := LoadProjectInto(ctx, fileContents, &opts, opts.Ref.Id, &config)
 	if err != nil {
 		return nil, nil, errors.Wrapf(err, "error parsing config file for '%s'", opts.Ref.Id)
 	}
@@ -563,9 +733,9 @@ func GetProjectFromFile(ctx context.Context, opts GetProjectOpts) (*Project, *Pa
 // matrix logic has been evaluated).
 func createIntermediateProject(yml []byte) (*ParserProject, error) {
 	p := &ParserProject{}
-	err := yaml.Unmarshal(yml, p)
-	if err != nil {
-		return nil, errors.Wrap(err, "error unmarshalling into parser project")
+	if err := util.UnmarshalYAMLWithFallback(yml, p); err != nil {
+		yamlErr := thirdparty.YAMLFormatError{Message: err.Error()}
+		return nil, errors.Wrap(yamlErr, "error unmarshalling into parser project")
 	}
 	if p.Functions == nil {
 		p.Functions = map[string]*YAMLCommandSet{}
@@ -580,29 +750,34 @@ func createIntermediateProject(yml []byte) (*ParserProject, error) {
 func TranslateProject(pp *ParserProject) (*Project, error) {
 	// Transfer top level fields
 	proj := &Project{
-		Enabled:           pp.Enabled,
-		Stepback:          pp.Stepback,
-		PreErrorFailsTask: pp.PreErrorFailsTask,
-		OomTracker:        pp.OomTracker,
-		BatchTime:         pp.BatchTime,
-		Owner:             pp.Owner,
-		Repo:              pp.Repo,
-		RemotePath:        pp.RemotePath,
-		Branch:            pp.Branch,
-		Identifier:        pp.Identifier,
-		DisplayName:       pp.DisplayName,
-		CommandType:       pp.CommandType,
-		Ignore:            pp.Ignore,
-		Parameters:        pp.Parameters,
-		Pre:               pp.Pre,
-		Post:              pp.Post,
-		EarlyTermination:  pp.EarlyTermination,
-		Timeout:           pp.Timeout,
-		CallbackTimeout:   pp.CallbackTimeout,
-		Modules:           pp.Modules,
-		Functions:         pp.Functions,
-		ExecTimeoutSecs:   pp.ExecTimeoutSecs,
-		Loggers:           pp.Loggers,
+		Enabled:                utility.FromBoolPtr(pp.Enabled),
+		Stepback:               utility.FromBoolPtr(pp.Stepback),
+		PreErrorFailsTask:      utility.FromBoolPtr(pp.PreErrorFailsTask),
+		PostErrorFailsTask:     utility.FromBoolPtr(pp.PostErrorFailsTask),
+		OomTracker:             utility.FromBoolPtr(pp.OomTracker),
+		BatchTime:              utility.FromIntPtr(pp.BatchTime),
+		Owner:                  utility.FromStringPtr(pp.Owner),
+		Repo:                   utility.FromStringPtr(pp.Repo),
+		RemotePath:             utility.FromStringPtr(pp.RemotePath),
+		Branch:                 utility.FromStringPtr(pp.Branch),
+		Identifier:             utility.FromStringPtr(pp.Identifier),
+		DisplayName:            utility.FromStringPtr(pp.DisplayName),
+		CommandType:            utility.FromStringPtr(pp.CommandType),
+		Ignore:                 pp.Ignore,
+		Parameters:             pp.Parameters,
+		Pre:                    pp.Pre,
+		Post:                   pp.Post,
+		EarlyTermination:       pp.EarlyTermination,
+		Timeout:                pp.Timeout,
+		CallbackTimeout:        utility.FromIntPtr(pp.CallbackTimeout),
+		Modules:                pp.Modules,
+		Functions:              pp.Functions,
+		ExecTimeoutSecs:        utility.FromIntPtr(pp.ExecTimeoutSecs),
+		Loggers:                pp.Loggers,
+		TaskAnnotationSettings: pp.TaskAnnotationSettings,
+		BuildBaronSettings:     pp.BuildBaronSettings,
+		PerfEnabled:            utility.FromBoolPtr(pp.PerfEnabled),
+		DeactivatePrevious:     utility.FromBoolPtr(pp.DeactivatePrevious),
 	}
 	catcher := grip.NewBasicCatcher()
 	tse := NewParserTaskSelectorEvaluator(pp.Tasks)
@@ -619,7 +794,7 @@ func TranslateProject(pp *ParserProject) (*Project, error) {
 
 	proj.BuildVariants, errs = evaluateBuildVariants(tse, tgse, vse, buildVariants, pp.Tasks, proj.TaskGroups)
 	catcher.Extend(errs)
-	return proj, errors.Wrap(catcher.Resolve(), "error translating project")
+	return proj, errors.Wrap(catcher.Resolve(), TranslateProjectError)
 }
 
 func (pp *ParserProject) AddTask(name string, commands []PluginCommandConf) {
@@ -689,17 +864,18 @@ func evaluateTaskUnits(tse *taskSelectorEvaluator, tgse *tagSelectorEvaluator, v
 	}
 	for _, ptg := range tgs {
 		tg := TaskGroup{
-			Name:                  ptg.Name,
-			SetupGroupFailTask:    ptg.SetupGroupFailTask,
-			SetupGroupTimeoutSecs: ptg.SetupGroupTimeoutSecs,
-			SetupGroup:            ptg.SetupGroup,
-			TeardownGroup:         ptg.TeardownGroup,
-			SetupTask:             ptg.SetupTask,
-			TeardownTask:          ptg.TeardownTask,
-			Tags:                  ptg.Tags,
-			MaxHosts:              ptg.MaxHosts,
-			Timeout:               ptg.Timeout,
-			ShareProcs:            ptg.ShareProcs,
+			Name:                    ptg.Name,
+			SetupGroupFailTask:      ptg.SetupGroupFailTask,
+			TeardownTaskCanFailTask: ptg.TeardownTaskCanFailTask,
+			SetupGroupTimeoutSecs:   ptg.SetupGroupTimeoutSecs,
+			SetupGroup:              ptg.SetupGroup,
+			TeardownGroup:           ptg.TeardownGroup,
+			SetupTask:               ptg.SetupTask,
+			TeardownTask:            ptg.TeardownTask,
+			Tags:                    ptg.Tags,
+			MaxHosts:                ptg.MaxHosts,
+			Timeout:                 ptg.Timeout,
+			ShareProcs:              ptg.ShareProcs,
 		}
 		if tg.MaxHosts < 1 {
 			tg.MaxHosts = 1
@@ -735,6 +911,7 @@ func evaluateBuildVariants(tse *taskSelectorEvaluator, tgse *tagSelectorEvaluato
 			Push:          pbv.Push,
 			BatchTime:     pbv.BatchTime,
 			CronBatchTime: pbv.CronBatchTime,
+			Activate:      pbv.Activate,
 			Stepback:      pbv.Stepback,
 			RunOn:         pbv.RunOn,
 			Tags:          pbv.Tags,
@@ -940,6 +1117,7 @@ func getParserBuildVariantTaskUnit(name string, pt parserTask, bvt parserBVTaskU
 		CommitQueueMerge: bvt.CommitQueueMerge,
 		CronBatchTime:    bvt.CronBatchTime,
 		BatchTime:        bvt.BatchTime,
+		Activate:         bvt.Activate,
 	}
 	if res.Priority == 0 {
 		res.Priority = pt.Priority

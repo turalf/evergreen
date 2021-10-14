@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/evergreen-ci/evergreen"
-	"github.com/evergreen-ci/evergreen/model/build"
 	"github.com/evergreen-ci/evergreen/model/host"
 	"github.com/evergreen-ci/evergreen/model/task"
 	"github.com/evergreen-ci/utility"
@@ -40,7 +39,7 @@ func newDistroTaskDAGDispatchService(taskQueue TaskQueue, ttl time.Duration) (*b
 		distroID: taskQueue.Distro,
 		ttl:      ttl,
 	}
-	start := time.Now()
+
 	if taskQueue.Length() != 0 {
 		if err := d.rebuild(taskQueue.Queue); err != nil {
 			return nil, errors.Wrapf(err, "error creating newDistroTaskDAGDispatchService for distro '%s'", taskQueue.Distro)
@@ -57,8 +56,6 @@ func newDistroTaskDAGDispatchService(taskQueue TaskQueue, ttl time.Duration) (*b
 		"num_task_groups":           len(d.taskGroups),
 		"num_taskqueueitems":        taskQueue.Length(),
 		"sorted_num_taskqueueitems": len(d.sorted),
-		"duration":                  time.Since(start),
-		"duration_secs":             time.Since(start).Seconds(),
 	})
 
 	return d, nil
@@ -248,7 +245,7 @@ func (d *basicCachedDAGDispatcherImpl) rebuild(items []TaskQueueItem) error {
 	return nil
 }
 
-// FindNextTask returns the next dispatchable task in the queue.
+// FindNextTask returns the next dispatchable task in the queue, and returns the tasks that need to be checked for dependencies.
 func (d *basicCachedDAGDispatcherImpl) FindNextTask(spec TaskSpec) *TaskQueueItem {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -283,8 +280,6 @@ func (d *basicCachedDAGDispatcherImpl) FindNextTask(spec TaskSpec) *TaskQueueIte
 			"distro_id":                d.distroID,
 		})
 	}
-	var totalDurationCheckingBlockedTasks float64
-	var numCheckBlockedTasks int
 	var numIterated int
 	dependencyCaches := make(map[string]task.Task)
 	for i := range d.sorted {
@@ -351,31 +346,8 @@ func (d *basicCachedDAGDispatcherImpl) FindNextTask(spec TaskSpec) *TaskQueueIte
 			}
 
 			if !dependenciesMet {
-				start := time.Now()
-				grip.Warning(message.WrapError(checkUnmarkedBlockingTasks(nextTaskFromDB, dependencyCaches), message.Fields{
-					"dispatcher":    DAGDispatcher,
-					"function":      "FindNextTask",
-					"operation":     "checkUnmarkedBlockingTasks",
-					"outcome":       "skip and continue",
-					"task":          item.Id,
-					"distro_id":     d.distroID,
-					"duration":      time.Since(start),
-					"duration_secs": time.Since(start).Seconds(),
-				}))
-				totalDurationCheckingBlockedTasks += time.Since(start).Seconds()
-				numCheckBlockedTasks += 1
 				continue
 			}
-			grip.Debug(message.Fields{
-				"total_duration_secs": totalDurationCheckingBlockedTasks,
-				"total_operations":    numCheckBlockedTasks,
-				"dispatcher":          DAGDispatcher,
-				"operation":           "checkUnmarkedBlockingTasks",
-				"distro":              d.distroID,
-				"num_iterated":        numIterated,
-				"total_size":          len(d.sorted),
-				"task":                item.Id,
-			})
 			return item
 		}
 
@@ -410,31 +382,11 @@ func (d *basicCachedDAGDispatcherImpl) FindNextTask(spec TaskSpec) *TaskQueueIte
 					taskGroupTask := d.getItemByNodeID(node.ID()) // *TaskQueueItem
 					taskGroupTask.IsDispatched = true
 
-					grip.Debug(message.Fields{
-						"total_duration_secs": totalDurationCheckingBlockedTasks,
-						"total_operations":    numCheckBlockedTasks,
-						"dispatcher":          DAGDispatcher,
-						"operation":           "checkUnmarkedBlockingTasks",
-						"distro":              d.distroID,
-						"num_iterated":        numIterated,
-						"total_size":          len(d.sorted),
-						"task":                next.Id,
-					})
 					return next
 				}
 			}
 		}
 	}
-	grip.Debug(message.Fields{
-		"total_duration_secs": totalDurationCheckingBlockedTasks,
-		"total_operations":    numCheckBlockedTasks,
-		"dispatcher":          DAGDispatcher,
-		"operation":           "checkUnmarkedBlockingTasks",
-		"distro":              d.distroID,
-		"num_iterated":        numIterated,
-		"total_size":          len(d.sorted),
-		"task":                "none",
-	})
 	return nil
 }
 
@@ -502,16 +454,6 @@ func (d *basicCachedDAGDispatcherImpl) nextTaskGroupTask(unit schedulableUnit) *
 		}
 
 		if !dependenciesMet {
-			grip.Warning(message.WrapError(checkUnmarkedBlockingTasks(nextTaskFromDB, dependencyCaches), message.Fields{
-				"dispatcher": DAGDispatcher,
-				"function":   "nextTaskGroupTask",
-				"operation":  "checkUnmarkedBlockingTasks",
-				"message":    "error checking dependencies for task",
-				"outcome":    "skip and continue",
-				"task":       nextTaskQueueItem.Id,
-				"distro_id":  d.distroID,
-			}))
-
 			continue
 		}
 
@@ -524,38 +466,4 @@ func (d *basicCachedDAGDispatcherImpl) nextTaskGroupTask(unit schedulableUnit) *
 	}
 
 	return nil
-}
-
-func checkUnmarkedBlockingTasks(t *task.Task, dependencyCaches map[string]task.Task) error {
-	catcher := grip.NewBasicCatcher()
-
-	blockingTasks, err := t.RefreshBlockedDependencies(dependencyCaches)
-	catcher.Add(errors.Wrap(err, "can't get blocking tasks"))
-	if err == nil {
-		for _, task := range blockingTasks {
-			catcher.Add(errors.Wrapf(UpdateBlockedDependencies(&task), "can't update blocked dependencies for '%s'", task.Id))
-		}
-	}
-
-	blockingDeactivatedTasks, err := t.BlockedOnDeactivatedDependency(dependencyCaches)
-	catcher.Add(errors.Wrap(err, "can't get blocked status"))
-	if err == nil && len(blockingDeactivatedTasks) > 0 {
-		var deactivatedDependencies []task.Task
-		deactivatedDependencies, err = task.DeactivateDependencies(blockingDeactivatedTasks, evergreen.DefaultTaskActivator+".dispatcher")
-		catcher.Add(err)
-		if err == nil {
-			catcher.Add(build.SetManyCachedTasksActivated(deactivatedDependencies, false))
-		}
-	}
-
-	// also update the display task status in case it is out of date
-	if t.IsPartOfDisplay() {
-		parent, err := t.GetDisplayTask()
-		catcher.Add(err)
-		if parent != nil {
-			catcher.Add(UpdateDisplayTask(parent))
-		}
-	}
-
-	return catcher.Resolve()
 }

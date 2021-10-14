@@ -12,6 +12,7 @@ import (
 const (
 	User            = "mci"
 	GithubPatchUser = "github_pull_request"
+	ParentPatchUser = "parent_patch"
 
 	HostRunning         = "running"
 	HostTerminated      = "terminated"
@@ -46,6 +47,9 @@ const (
 	//  1. a task is not scheduled to run (when Task.Activated == false)
 	//  2. a task is scheduled to run (when Task.Activated == true)
 	TaskUndispatched = "undispatched"
+	TaskUnscheduled  = "unscheduled"
+	// TaskWillRun is a subset of TaskUndispatched and is only used in the UI
+	TaskWillRun = "will-run"
 
 	// TaskStarted indicates a task is running on an agent
 	TaskStarted = "started"
@@ -70,6 +74,9 @@ const (
 
 	TaskStatusBlocked = "blocked"
 	TaskStatusPending = "pending"
+
+	// This is not an official task status; it is used by the front end to indicate that there is a linked issue in the annotation
+	TaskKnownIssue = "known-issue"
 
 	// Task Command Types
 	CommandTypeTest   = "test"
@@ -109,6 +116,7 @@ const (
 	PatchStarted     = "started"
 	PatchSucceeded   = "succeeded"
 	PatchFailed      = "failed"
+	PatchAborted     = "aborted" // This is a display status only and not a real patch status
 	PatchAllOutcomes = "*"
 
 	PushLogPushing = "pushing"
@@ -219,6 +227,10 @@ const (
 	HostAllocatorNoFeedback              = "no-feedback"
 	HostAllocatorUseDefaultFeedback      = ""
 
+	HostsOverallocatedTerminate  = "terminate-hosts-when-overallocated"
+	HostsOverallocatedIgnore     = "no-terminations-when-overallocated"
+	HostsOverallocatedUseDefault = ""
+
 	// CommitQueueAlias and GithubPRAlias are special aliases to specify variants and tasks for commit queue and GitHub PR patches
 	CommitQueueAlias  = "__commit_queue"
 	GithubPRAlias     = "__github"
@@ -229,22 +241,20 @@ const (
 	MergeTaskName    = "merge-patch"
 	MergeTaskGroup   = "merge-task-group"
 
-	MaxTeardownGroupTimeoutSecs = 30 * 60
-
 	DefaultJasperPort = 2385
 
 	GlobalGitHubTokenExpansion = "global_github_oauth_token"
 
 	VSCodePort = 2021
 
-	// can flip this when regions are configured
-	UseSpawnHostRegions = false
-
 	// DefaultTaskSyncAtEndTimeout is the default timeout for task sync at the
 	// end of a patch.
 	DefaultTaskSyncAtEndTimeout = time.Hour
 
 	DefaultShutdownWaitSeconds = 10
+
+	SaveGenerateTasksError     = "error saving config in `generate.tasks`"
+	TasksAlreadyGeneratedError = "generator already ran and generated tasks"
 )
 
 var InternalAliases []string = []string{
@@ -264,6 +274,16 @@ var TaskFailureStatuses []string = []string{
 	TaskSystemTimedOut,
 }
 
+var TaskUnstartedStatuses []string = []string{
+	TaskInactive,
+	TaskUnstarted,
+	TaskUndispatched,
+}
+
+func IsUnstartedTaskStatus(status string) bool {
+	return utility.StringSliceContains(TaskUnstartedStatuses, status)
+}
+
 func IsFinishedTaskStatus(status string) bool {
 	if status == TaskSucceeded ||
 		IsFailedTaskStatus(status) {
@@ -275,6 +295,33 @@ func IsFinishedTaskStatus(status string) bool {
 
 func IsFailedTaskStatus(status string) bool {
 	return utility.StringSliceContains(TaskFailureStatuses, status)
+}
+
+func IsFinishedPatchStatus(status string) bool {
+	return status == PatchFailed || status == PatchSucceeded
+}
+
+func IsFinishedBuildStatus(status string) bool {
+	return status == BuildFailed || status == BuildSucceeded
+}
+
+func IsFinishedVersionStatus(status string) bool {
+	return status == VersionFailed || status == VersionSucceeded
+}
+
+func VersionStatusToPatchStatus(versionStatus string) (string, error) {
+	switch versionStatus {
+	case VersionCreated:
+		return PatchCreated, nil
+	case VersionStarted:
+		return PatchStarted, nil
+	case VersionFailed:
+		return PatchFailed, nil
+	case VersionSucceeded:
+		return PatchSucceeded, nil
+	default:
+		return "", errors.Errorf("unknown version status: %s", versionStatus)
+	}
 }
 
 // evergreen package names
@@ -290,6 +337,8 @@ const (
 	TaskSecretHeader    = "Task-Secret"
 	HostHeader          = "Host-Id"
 	HostSecretHeader    = "Host-Secret"
+	PodHeader           = "Pod-Id"
+	PodSecretHeader     = "Pod-Secret"
 	ContentTypeHeader   = "Content-Type"
 	ContentTypeValue    = "application/json"
 	ContentLengthHeader = "Content-Length"
@@ -298,8 +347,11 @@ const (
 )
 
 const (
+	// CredentialsCollection is the collection containing TLS credentials to
+	// connect to a Jasper service running on a host.
 	CredentialsCollection = "credentials"
-	CAName                = "evergreen"
+	// CAName is the name of the root CA for the TLS credentials.
+	CAName = "evergreen"
 )
 
 // cloud provider related constants
@@ -440,6 +492,7 @@ func (k SenderKey) String() string {
 // Recognized architectures, should be in the form ${GOOS}_${GOARCH}.
 const (
 	ArchDarwinAmd64  = "darwin_amd64"
+	ArchDarwinArm64  = "darwin_arm64"
 	ArchLinux386     = "linux_386"
 	ArchLinuxPpc64le = "linux_ppc64le"
 	ArchLinuxS390x   = "linux_s390x"
@@ -457,6 +510,11 @@ var (
 		PatchVersionRequester,
 		GithubPRRequester,
 		MergeTestRequester,
+	}
+
+	SystemActivators = []string{
+		DefaultTaskActivator,
+		APIServerTaskActivator,
 	}
 
 	// UpHostStatus is a list of all host statuses that are considered up.
@@ -567,6 +625,17 @@ var (
 		HostAllocatorNoFeedback,
 	}
 
+	ValidHostsOverallocatedRules = []string{
+		HostsOverallocatedUseDefault,
+		HostsOverallocatedIgnore,
+		HostsOverallocatedTerminate,
+	}
+
+	ValidDefaultHostsOverallocatedRules = []string{
+		HostsOverallocatedIgnore,
+		HostsOverallocatedTerminate,
+	}
+
 	// constant arrays for db update logic
 	AbortableStatuses   = []string{TaskStarted, TaskDispatched}
 	CompletedStatuses   = []string{TaskSucceeded, TaskFailed}
@@ -584,6 +653,7 @@ var (
 		ArchLinuxArm64:   "Linux ARM 64-bit",
 		ArchWindows386:   "Windows 32-bit",
 		ArchDarwinAmd64:  "OSX 64-bit",
+		ArchDarwinArm64:  "OSX ARM 64-bit",
 		ArchLinuxAmd64:   "Linux 64-bit",
 		ArchLinux386:     "Linux 32-bit",
 	}
@@ -603,7 +673,7 @@ func FindEvergreenHome() string {
 
 // IsSystemActivator returns true when the task activator is Evergreen.
 func IsSystemActivator(caller string) bool {
-	return caller == DefaultTaskActivator || caller == APIServerTaskActivator
+	return utility.StringSliceContains(SystemActivators, caller)
 }
 
 func IsPatchRequester(requester string) bool {
@@ -619,7 +689,7 @@ func IsGitTagRequester(requester string) bool {
 }
 
 func ShouldConsiderBatchtime(requester string) bool {
-	return requester != AdHocRequester && requester != GitTagRequester
+	return !IsPatchRequester(requester) && requester != AdHocRequester && requester != GitTagRequester
 }
 
 // Permissions-related constants
@@ -634,6 +704,7 @@ const (
 
 	AllProjectsScope          = "all_projects"
 	UnrestrictedProjectsScope = "unrestricted_projects"
+	RestrictedProjectsScope   = "restricted_projects"
 	AllDistrosScope           = "all_distros"
 )
 
@@ -656,6 +727,7 @@ var (
 	// Project permissions.
 	PermissionProjectSettings  = "project_settings"
 	PermissionProjectVariables = "project_variables"
+	PermissionGitTagVersions   = "project_git_tags"
 	PermissionTasks            = "project_tasks"
 	PermissionAnnotations      = "project_task_annotations"
 	PermissionPatches          = "project_patches"
@@ -693,6 +765,14 @@ var (
 	}
 	ProjectSettingsNone = PermissionLevel{
 		Description: "No project settings permissions",
+		Value:       0,
+	}
+	GitTagVersionsCreate = PermissionLevel{
+		Description: "Create versions with git tags",
+		Value:       10,
+	}
+	GitTagVersionsNone = PermissionLevel{
+		Description: "Not able to create versions with git tags",
 		Value:       0,
 	}
 	AnnotationsModify = PermissionLevel{
@@ -780,6 +860,8 @@ func GetDisplayNameForPermissionKey(permissionKey string) string {
 		return "Task Annotations"
 	case PermissionPatches:
 		return "Patches"
+	case PermissionGitTagVersions:
+		return "Git Tag Versions"
 	case PermissionLogs:
 		return "Logs"
 	case PermissionDistroSettings:
@@ -818,6 +900,11 @@ func GetPermissionLevelsForPermissionKey(permissionKey string) []PermissionLevel
 			PatchSubmit,
 			PatchNone,
 		}
+	case PermissionGitTagVersions:
+		return []PermissionLevel{
+			GitTagVersionsCreate,
+			GitTagVersionsNone,
+		}
 	case PermissionLogs:
 		return []PermissionLevel{
 			LogsView,
@@ -849,6 +936,7 @@ var ProjectPermissions = []string{
 	PermissionTasks,
 	PermissionAnnotations,
 	PermissionPatches,
+	PermissionGitTagVersions,
 	PermissionLogs,
 }
 
@@ -864,9 +952,44 @@ var SuperuserPermissions = []string{
 	PermissionRoleModify,
 }
 
-// Evergreen log types
+const (
+	BasicProjectAccessRole = "basic_project_access"
+	BasicDistroAccessRole  = "basic_distro_access"
+)
+
+var BasicAccessRoles = []string{
+	BasicProjectAccessRole,
+	BasicDistroAccessRole,
+}
+
+// Evergreen log types.
 const (
 	LogTypeAgent  = "agent_log"
 	LogTypeTask   = "task_log"
 	LogTypeSystem = "system_log"
+)
+
+type ECSClusterPlatform string
+
+const (
+	ECSClusterPlatformLinux   = "linux"
+	ECSClusterPlatformWindows = "windows"
+)
+
+func (p ECSClusterPlatform) Validate() error {
+	switch p {
+	case ECSClusterPlatformLinux, ECSClusterPlatformWindows:
+		return nil
+	default:
+		return errors.Errorf("unrecognized ECS cluster platform '%s'", p)
+	}
+}
+
+// LogViewer represents recognized viewers for rendering logs.
+type LogViewer string
+
+const (
+	LogViewerRaw     LogViewer = "raw"
+	LogViewerHTML    LogViewer = "html"
+	LogViewerLobster LogViewer = "lobster"
 )

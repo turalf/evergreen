@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/evergreen-ci/evergreen"
 	"github.com/evergreen-ci/evergreen/db"
 	"github.com/evergreen-ci/evergreen/model/testresult"
 	"github.com/stretchr/testify/suite"
@@ -73,11 +74,10 @@ func (s *TaskTestResultSuite) SetupTest() {
 }
 
 func (s *TaskTestResultSuite) TestNoOldNoNewTestResults() {
-	t, err := FindOneNoMerge(ById(s.tasks[2].Id))
+	t, err := FindOne(ById(s.tasks[2].Id))
 	s.NoError(err)
 
-	err = t.MergeNewTestResults()
-	s.NoError(err)
+	s.NoError(t.PopulateTestResults())
 
 	s.Equal("taskid-2", t.Id)
 	s.Equal("secret-2", t.Secret)
@@ -98,6 +98,7 @@ func (s *TaskTestResultSuite) TestNoOldNewTestResults() {
 		Project:    fmt.Sprintf("project-%d", 10),
 		Revision:   fmt.Sprintf("revision-%d", 10),
 		Execution:  3,
+		Status:     evergreen.TaskSucceeded,
 	}
 	err := t.Insert()
 	s.Require().NoError(err)
@@ -125,11 +126,10 @@ func (s *TaskTestResultSuite) TestNoOldNewTestResults() {
 		s.NoError(err)
 	}
 
-	t, err = FindOneNoMerge(ById("taskid-10"))
+	t, err = FindOne(ById("taskid-10"))
 	s.NoError(err)
 
-	err = t.MergeNewTestResults()
-	s.NoError(err)
+	s.NoError(t.PopulateTestResults())
 
 	s.Equal("taskid-10", t.Id)
 	s.Equal("secret-10", t.Secret)
@@ -150,6 +150,7 @@ func (s *TaskTestResultSuite) TestArchivedTask() {
 		Project:    fmt.Sprintf("project-%d", 20),
 		Revision:   fmt.Sprintf("revision-%d", 20),
 		Execution:  3,
+		Status:     evergreen.TaskFailed,
 	}
 	err := t.Insert()
 	s.NoError(err)
@@ -179,11 +180,10 @@ func (s *TaskTestResultSuite) TestArchivedTask() {
 		s.NoError(err)
 	}
 
-	t, err = FindOneOldNoMerge(ById("taskid-20_3"))
+	t, err = FindOneOld(ById("taskid-20_3"))
 	s.NoError(err)
 
-	err = t.MergeNewTestResults()
-	s.NoError(err)
+	s.NoError(t.PopulateTestResults())
 
 	s.Equal("taskid-20_3", t.Id)
 	s.Equal("secret-20", t.Secret)

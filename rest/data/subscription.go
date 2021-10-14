@@ -3,8 +3,10 @@ package data
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/evergreen-ci/evergreen/model/event"
+	"github.com/evergreen-ci/evergreen/model/patch"
 	restModel "github.com/evergreen-ci/evergreen/rest/model"
 	"github.com/evergreen-ci/evergreen/trigger"
 	"github.com/evergreen-ci/gimlet"
@@ -15,7 +17,7 @@ import (
 
 type DBSubscriptionConnector struct{}
 
-func (dc *DBSubscriptionConnector) SaveSubscriptions(owner string, subscriptions []restModel.APISubscription) error {
+func (dc *DBSubscriptionConnector) SaveSubscriptions(owner string, subscriptions []restModel.APISubscription, isProjectOwner bool) error {
 	dbSubscriptions := []event.Subscription{}
 	for _, subscription := range subscriptions {
 		subscriptionInterface, err := subscription.ToService()
@@ -25,13 +27,16 @@ func (dc *DBSubscriptionConnector) SaveSubscriptions(owner string, subscriptions
 				Message:    "Error parsing request body: " + err.Error(),
 			}
 		}
-
 		dbSubscription, ok := subscriptionInterface.(event.Subscription)
 		if !ok {
 			return gimlet.ErrorResponse{
 				StatusCode: http.StatusInternalServerError,
 				Message:    "Error parsing subscription interface",
 			}
+		}
+		if isProjectOwner {
+			dbSubscription.OwnerType = event.OwnerTypeProject
+			dbSubscription.Owner = owner
 		}
 
 		if !trigger.ValidateTrigger(dbSubscription.ResourceType, dbSubscription.Trigger) {
@@ -59,13 +64,13 @@ func (dc *DBSubscriptionConnector) SaveSubscriptions(owner string, subscriptions
 			}
 		}
 
-		if ok, msg := event.ValidateSelectors(dbSubscription.Subscriber, dbSubscription.Selectors); !ok {
+		if ok, msg := event.ValidateSelectors(dbSubscription.Selectors); !ok {
 			return gimlet.ErrorResponse{
 				StatusCode: http.StatusBadRequest,
 				Message:    fmt.Sprintf("Invalid selectors: %s", msg),
 			}
 		}
-		if ok, msg := event.ValidateSelectors(dbSubscription.Subscriber, dbSubscription.RegexSelectors); !ok {
+		if ok, msg := event.ValidateSelectors(dbSubscription.RegexSelectors); !ok {
 			return gimlet.ErrorResponse{
 				StatusCode: http.StatusBadRequest,
 				Message:    fmt.Sprintf("Invalid regex selectors: %s", msg),
@@ -81,6 +86,39 @@ func (dc *DBSubscriptionConnector) SaveSubscriptions(owner string, subscriptions
 		}
 
 		dbSubscriptions = append(dbSubscriptions, dbSubscription)
+
+		if dbSubscription.ResourceType == event.ResourceTypeVersion && isEndTrigger(dbSubscription.Trigger) {
+
+			//find all children, iterate through them
+			var versionId string
+			for _, selector := range dbSubscription.Selectors {
+				if selector.Type == "id" {
+					versionId = selector.Data
+				}
+			}
+			children, err := getVersionChildren(versionId)
+			if err != nil {
+				return gimlet.ErrorResponse{
+					StatusCode: http.StatusInternalServerError,
+					Message:    "Error retrieving child versions: " + err.Error(),
+				}
+			}
+
+			for _, childPatchId := range children {
+				childDbSubscription := dbSubscription
+				childDbSubscription.LastUpdated = time.Now()
+				var selectors []event.Selector
+				for _, selector := range dbSubscription.Selectors {
+					if selector.Type == "id" {
+						selector.Data = childPatchId
+					}
+					selectors = append(selectors, selector)
+				}
+				childDbSubscription.Selectors = selectors
+				dbSubscriptions = append(dbSubscriptions, childDbSubscription)
+			}
+		}
+
 	}
 
 	catcher := grip.NewSimpleCatcher()
@@ -88,6 +126,22 @@ func (dc *DBSubscriptionConnector) SaveSubscriptions(owner string, subscriptions
 		catcher.Add(subscription.Upsert())
 	}
 	return catcher.Resolve()
+}
+
+func isEndTrigger(trigger string) bool {
+	return trigger == event.TriggerFailure || trigger == event.TriggerSuccess || trigger == event.TriggerOutcome
+}
+
+func getVersionChildren(versionId string) ([]string, error) {
+	patchDoc, err := patch.FindOne(patch.ByVersion(versionId))
+	if err != nil {
+		return nil, errors.Wrap(err, "error getting patch")
+	}
+	if patchDoc == nil {
+		return nil, errors.Wrap(err, "patch not found")
+	}
+	return patchDoc.Triggers.ChildPatches, nil
+
 }
 
 func (dc *DBSubscriptionConnector) GetSubscriptions(owner string, ownerType event.OwnerType) ([]restModel.APISubscription, error) {
@@ -168,7 +222,7 @@ func (mc *MockSubscriptionConnector) GetSubscriptions(owner string, ownerType ev
 	return mc.MockSubscriptions, nil
 }
 
-func (mc *MockSubscriptionConnector) SaveSubscriptions(owner string, subscriptions []restModel.APISubscription) error {
+func (mc *MockSubscriptionConnector) SaveSubscriptions(owner string, subscriptions []restModel.APISubscription, isProjectOwner bool) error {
 	for _, sub := range subscriptions {
 		mc.MockSubscriptions = append(mc.MockSubscriptions, sub)
 	}

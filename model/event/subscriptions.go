@@ -72,6 +72,7 @@ const (
 	TriggerExpiration                = "expiration"
 	TriggerPatchStarted              = "started"
 	TriggerTaskFirstFailureInVersion = "first-failure-in-version"
+	TriggerTaskStarted               = "task-started"
 )
 
 type Subscription struct {
@@ -298,7 +299,7 @@ func IsSubscriptionAllowed(sub Subscription) (bool, string) {
 	return true, ""
 }
 
-func ValidateSelectors(subscriber Subscriber, selectors []Selector) (bool, string) {
+func ValidateSelectors(selectors []Selector) (bool, string) {
 	for i := range selectors {
 		if len(selectors[i].Type) == 0 || len(selectors[i].Data) == 0 {
 			return false, "Selector had empty type or data"
@@ -314,13 +315,19 @@ func (s *Subscription) Validate() error {
 		catcher.Add(errors.New("must specify at least 1 selector"))
 	}
 	if s.ResourceType == "" {
-		catcher.Add(errors.New("subscription type is required"))
+		catcher.New("subscription type is required")
 	}
 	if s.Trigger == "" {
-		catcher.Add(errors.New("subscription trigger is required"))
+		catcher.New("subscription trigger is required")
 	}
 	if !IsValidOwnerType(string(s.OwnerType)) {
-		catcher.Add(errors.Errorf("%s is not a valid owner type", s.OwnerType))
+		catcher.Errorf("%s is not a valid owner type", s.OwnerType)
+	}
+	// Disallow creating a JIRA comment type subscriber for every task in a project
+	if s.OwnerType == OwnerTypeProject &&
+		s.ResourceType == ResourceTypeTask &&
+		s.Subscriber.Type == JIRACommentSubscriberType {
+		catcher.New("JIRA comment subscription not allowed for all tasks in the project")
 	}
 	catcher.Add(s.runCustomValidation())
 	catcher.Add(s.Subscriber.Validate())

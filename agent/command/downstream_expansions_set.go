@@ -11,7 +11,7 @@ import (
 	"github.com/evergreen-ci/evergreen/model/patch"
 	"github.com/mitchellh/mapstructure"
 	"github.com/pkg/errors"
-	yaml "gopkg.in/yaml.v2"
+	yaml "gopkg.in/yaml.v3"
 )
 
 // setExpansions takes a file of key value pairs and
@@ -71,7 +71,7 @@ func (c *setDownstream) Execute(ctx context.Context,
 	logger.Task().Infof("Saving downstream parameters to patch with keys from file: %s", c.YamlFile)
 
 	if len(c.downstreamParams) != 0 {
-		err = comm.SetDownstreamParams(ctx, c.downstreamParams, conf.Task.Id)
+		err = comm.SetDownstreamParams(ctx, c.downstreamParams, client.TaskData{ID: conf.Task.Id, Secret: conf.Task.Secret})
 		if err != nil {
 			return errors.WithStack(err)
 		}

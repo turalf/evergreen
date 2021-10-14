@@ -13,8 +13,8 @@ import (
 
 	"github.com/evergreen-ci/evergreen"
 	"github.com/evergreen-ci/utility"
-	"github.com/jpillora/backoff"
 	"github.com/mongodb/grip"
+	"github.com/mongodb/grip/message"
 	"github.com/pkg/errors"
 )
 
@@ -36,7 +36,7 @@ const (
 
 var HTTPConflictError = errors.New(evergreen.TaskConflict)
 
-func (c *communicatorImpl) newRequest(method, path, taskID, taskSecret, version string, data interface{}) (*http.Request, error) {
+func (c *baseCommunicator) newRequest(method, path, taskID, taskSecret, version string, data interface{}) (*http.Request, error) {
 	url := c.getPath(path, version)
 	r, err := http.NewRequest(method, url, nil)
 	if err != nil {
@@ -62,18 +62,15 @@ func (c *communicatorImpl) newRequest(method, path, taskID, taskSecret, version 
 	if taskSecret != "" {
 		r.Header.Add(evergreen.TaskSecretHeader, taskSecret)
 	}
-	if c.hostID != "" {
-		r.Header.Add(evergreen.HostHeader, c.hostID)
-	}
-	if c.hostSecret != "" {
-		r.Header.Add(evergreen.HostSecretHeader, c.hostSecret)
+	for name, val := range c.reqHeaders {
+		r.Header.Add(name, val)
 	}
 	r.Header.Add(evergreen.ContentTypeHeader, evergreen.ContentTypeValue)
 
 	return r, nil
 }
 
-func (c *communicatorImpl) createRequest(info requestInfo, data interface{}) (*http.Request, error) {
+func (c *baseCommunicator) createRequest(info requestInfo, data interface{}) (*http.Request, error) {
 	if info.method == http.MethodPost && data == nil {
 		return nil, errors.New("Attempting to post a nil body")
 	}
@@ -94,7 +91,7 @@ func (c *communicatorImpl) createRequest(info requestInfo, data interface{}) (*h
 	return r, nil
 }
 
-func (c *communicatorImpl) request(ctx context.Context, info requestInfo, data interface{}) (*http.Response, error) {
+func (c *baseCommunicator) request(ctx context.Context, info requestInfo, data interface{}) (*http.Response, error) {
 	r, err := c.createRequest(info, data)
 	if err != nil {
 		return nil, errors.WithStack(err)
@@ -107,7 +104,7 @@ func (c *communicatorImpl) request(ctx context.Context, info requestInfo, data i
 	return resp, nil
 }
 
-func (c *communicatorImpl) doRequest(ctx context.Context, r *http.Request) (*http.Response, error) {
+func (c *baseCommunicator) doRequest(ctx context.Context, r *http.Request) (*http.Response, error) {
 	var (
 		response *http.Response
 		err      error
@@ -133,7 +130,7 @@ func (c *communicatorImpl) doRequest(ctx context.Context, r *http.Request) (*htt
 	return response, nil
 }
 
-func (c *communicatorImpl) retryRequest(ctx context.Context, info requestInfo, data interface{}) (*http.Response, error) {
+func (c *baseCommunicator) retryRequest(ctx context.Context, info requestInfo, data interface{}) (*http.Response, error) {
 	var err error
 	if info.taskData != nil && !info.taskData.OverrideValidation && info.taskData.Secret == "" {
 		err = errors.New("no task secret provided")
@@ -156,19 +153,30 @@ func (c *communicatorImpl) retryRequest(ctx context.Context, info requestInfo, d
 
 	r.Header.Add(evergreen.ContentLengthHeader, strconv.Itoa(len(out)))
 
-	return utility.RetryRequest(ctx, r, c.maxAttempts, c.timeoutStart, c.timeoutMax)
-}
-
-func (c *communicatorImpl) getBackoff() *backoff.Backoff {
-	return &backoff.Backoff{
-		Min:    c.timeoutStart,
-		Max:    c.timeoutMax,
-		Factor: 2,
-		Jitter: true,
+	resp, err := utility.RetryRequest(ctx, r, c.retry)
+	if err != nil && resp != nil && resp.StatusCode == 400 {
+		var taskId, start, end string
+		if info.taskData != nil {
+			taskId = info.taskData.ID
+		}
+		if len(out) >= 100 {
+			start = string(out[0:100])
+			end = string(out[len(out)-100:])
+		}
+		grip.Debug(message.Fields{
+			"message":          "error sending request",
+			"method":           info.method,
+			"path":             info.path,
+			"task":             taskId,
+			"len_request":      len(out),
+			"start_of_request": start,
+			"end_of_request":   end,
+		})
 	}
+	return resp, err
 }
 
-func (c *communicatorImpl) getPath(path string, version string) string {
+func (c *baseCommunicator) getPath(path string, version string) string {
 	return fmt.Sprintf("%s%s/%s", c.serverURL, version, strings.TrimPrefix(path, "/"))
 }
 

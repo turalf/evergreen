@@ -19,15 +19,6 @@ import (
 )
 
 type Communicator interface {
-	// SetHostID sets the host ID.
-	SetHostID(string)
-	// SetHostSecret sets the host secret.
-	SetHostSecret(string)
-	// GetHostID returns the host ID.
-	GetHostID() string
-	// GetHostSecret returns the host secret.
-	GetHostSecret() string
-
 	// Method to release resources used by the communicator.
 	Close()
 
@@ -70,8 +61,11 @@ type Communicator interface {
 	// creates it if it doesn't exist.
 	GetCedarGRPCConn(context.Context) (*grpc.ClientConn, error)
 	// SetHasCedarResults sets the HasCedarResults flag to true in the
-	// task.
-	SetHasCedarResults(context.Context, TaskData) error
+	// task and sets CedarResultsFailed if there are failed results.
+	SetHasCedarResults(context.Context, TaskData, bool) error
+
+	// DisableHost signals to the app server that the host should be disabled.
+	DisableHost(context.Context, string, apimodels.DisableInfo) error
 
 	// GetAgentSetupData populates an agent with the necessary data, including
 	// secrets.
@@ -120,7 +114,7 @@ type Communicator interface {
 	ConcludeMerge(ctx context.Context, patchId, status string, td TaskData) error
 	GetAdditionalPatches(ctx context.Context, patchId string, td TaskData) ([]string, error)
 
-	SetDownstreamParams(ctx context.Context, downstreamParams []patchmodel.Parameter, taskId string) error
+	SetDownstreamParams(ctx context.Context, downstreamParams []patchmodel.Parameter, taskData TaskData) error
 }
 
 type LoggerMetadata struct {

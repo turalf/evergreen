@@ -5,12 +5,11 @@ import (
 	"time"
 
 	"github.com/evergreen-ci/evergreen"
-	"github.com/evergreen-ci/evergreen/model/distro"
+	"github.com/evergreen-ci/evergreen/model"
 	"github.com/evergreen-ci/evergreen/model/host"
 	"github.com/evergreen-ci/utility"
 	"github.com/mongodb/amboy"
 	"github.com/mongodb/grip"
-	"github.com/mongodb/grip/message"
 	"github.com/pkg/errors"
 )
 
@@ -31,24 +30,32 @@ func HandlePoisonedHost(ctx context.Context, env evergreen.Environment, h *host.
 			}
 
 			for _, container := range containers {
-				catcher.Add(DisableAndNotifyPoisonedHost(ctx, env, container, reason))
+				catcher.Add(DisableAndNotifyPoisonedHost(ctx, env, &container, reason))
 			}
-			catcher.Add(DisableAndNotifyPoisonedHost(ctx, env, *parent, reason))
+			catcher.Add(DisableAndNotifyPoisonedHost(ctx, env, parent, reason))
 		}
+	} else {
+		catcher.Add(DisableAndNotifyPoisonedHost(ctx, env, h, reason))
 	}
-	catcher.Add(DisableAndNotifyPoisonedHost(ctx, env, *h, reason))
+
 	return catcher.Resolve()
 }
 
-func DisableAndNotifyPoisonedHost(ctx context.Context, env evergreen.Environment, h host.Host, reason string) error {
-	if h.Status == evergreen.HostDecommissioned || h.Status == evergreen.HostTerminated {
+func DisableAndNotifyPoisonedHost(ctx context.Context, env evergreen.Environment, h *host.Host, reason string) error {
+	if utility.StringSliceContains(evergreen.DownHostStatus, h.Status) {
 		return nil
 	}
+
 	err := h.DisablePoisonedHost(reason)
 	if err != nil {
 		return errors.Wrap(err, "error disabling poisoned host")
 	}
-	return env.RemoteQueue().Put(ctx, NewDecoHostNotifyJob(env, &h, nil, reason))
+
+	if err = env.RemoteQueue().Put(ctx, NewDecoHostNotifyJob(env, h, nil, reason)); err != nil {
+		return errors.Wrap(err, "enqueueing decohost notify job")
+	}
+
+	return model.ClearAndResetStrandedTask(h)
 }
 
 // EnqueueHostReprovisioningJob enqueues a job to reprovision a host. For hosts
@@ -68,17 +75,8 @@ func EnqueueHostReprovisioningJob(ctx context.Context, env evergreen.Environment
 		if err := amboy.EnqueueUniqueJob(ctx, env.RemoteQueue(), NewConvertHostToNewProvisioningJob(env, *h, ts, 0)); err != nil {
 			return errors.Wrap(err, "enqueueing job to reprovision host to new")
 		}
-	case host.ReprovisionJasperRestart:
-		expiration, err := h.JasperCredentialsExpiration(ctx, env)
-		if err != nil {
-			grip.Warning(message.WrapError(err, "getting credentials expiration time"))
-			// If we cannot get the credentials for some reason (e.g. the
-			// host's credentials were deleted), assume the credentials have
-			// expired.
-			expiration = time.Now()
-		}
-		foundExpiration := err == nil
-		if err := amboy.EnqueueUniqueJob(ctx, env.RemoteQueue(), NewJasperRestartJob(env, *h, expiration, foundExpiration && h.Distro.BootstrapSettings.Communication == distro.CommunicationMethodRPC, ts, 0)); err != nil {
+	case host.ReprovisionRestartJasper:
+		if err := amboy.EnqueueUniqueJob(ctx, env.RemoteQueue(), NewRestartJasperJob(env, *h, ts)); err != nil {
 			return errors.Wrap(err, "enqueueing jobs to restart Jasper")
 		}
 	}

@@ -24,7 +24,7 @@ import (
 	"github.com/evergreen-ci/utility"
 	. "github.com/smartystreets/goconvey/convey"
 	"go.mongodb.org/mongo-driver/bson"
-	yaml "gopkg.in/yaml.v2"
+	yaml "gopkg.in/yaml.v3"
 )
 
 var testConfig = testutil.TestConfig()
@@ -124,6 +124,9 @@ func TestCLIFetchSource(t *testing.T) {
 	testutil.DisablePermissionsForTests()
 	defer testutil.EnablePermissionsForTests()
 	evergreen.GetEnvironment().Settings().Credentials = testConfig.Credentials
+	_ = evergreen.GetEnvironment().DB().RunCommand(nil, map[string]string{"create": build.Collection})
+	_ = evergreen.GetEnvironment().DB().RunCommand(nil, map[string]string{"create": task.Collection})
+	_ = evergreen.GetEnvironment().DB().RunCommand(nil, map[string]string{"create": model.VersionCollection})
 
 	Convey("with a task containing patches and modules", t, func() {
 		testSetup := setupCLITestHarness()
@@ -238,6 +241,7 @@ func TestCLIFetchArtifacts(t *testing.T) {
 			DependsOn:    []task.Dependency{},
 			DisplayName:  "task_two",
 		}).Insert()
+		So(err, ShouldBeNil)
 
 		err = (&artifact.Entry{
 			TaskId:          "rest_task_test_id1",

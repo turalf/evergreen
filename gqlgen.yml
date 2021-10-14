@@ -15,6 +15,8 @@ resolver:
 models:
   Build:
     model: github.com/evergreen-ci/evergreen/rest/model.APIBuild
+  VersionToRestart:
+    model: github.com/evergreen-ci/evergreen/model.VersionToRestart
   SubscriptionInput:
     model: github.com/evergreen-ci/evergreen/rest/model.APISubscription
   SelectorInput:
@@ -33,6 +35,10 @@ models:
     model: github.com/evergreen-ci/evergreen/rest/model.APIFile
   VariantTask:
     model: github.com/evergreen-ci/evergreen/rest/model.VariantTask
+  ChildPatch:
+    model: github.com/evergreen-ci/evergreen/rest/model.ChildPatch
+  ChildPatchAlias:
+    model: github.com/evergreen-ci/evergreen/rest/model.APIChildPatchAlias
   ModuleCodeChange:
     model: github.com/evergreen-ci/evergreen/rest/model.APIModulePatch
   FileDiff:
@@ -41,13 +47,6 @@ models:
     model: github.com/evergreen-ci/evergreen/rest/model.APIVolume
   Annotation:
     model: github.com/evergreen-ci/evergreen/rest/model.APITaskAnnotation
-    fields:
-      issues:
-        resolver: true
-      suspectedIssues:
-        resolver: true
-      createdIssues:
-        resolver: true
   Note:
     model: github.com/evergreen-ci/evergreen/rest/model.APINote
   IssueLinkInput:
@@ -59,13 +58,25 @@ models:
   Task:
     model: github.com/evergreen-ci/evergreen/rest/model.APITask
     fields:
-      reliesOn:
-        resolver: true
-      patchMetadata:
+      annotation:
         resolver: true
       baseTaskMetadata:
         resolver: true
-      annotation:
+      baseTask:
+        resolver: true
+      baseStatus:
+        resolver: true
+      buildVariantDisplayName:
+        resolver: true
+      canModifyAnnotation:
+        resolver: true
+      estimatedStart:
+        resolver: true
+      executionTasksFull:
+        resolver: true
+      patchMetadata:
+        resolver: true
+      reliesOn:
         resolver: true
       spawnHostLink:
         resolver: true
@@ -74,16 +85,6 @@ models:
       isPerfPluginEnabled:
         resolver: true
       project:
-        resolver: true
-      canModifyAnnotation:
-        resolver: true
-      executionTasksFull:
-        resolver: true
-      buildVariantDisplayName:
-        resolver: true
-      baseTask:
-        resolver: true
-      baseStatus:
         resolver: true
   BaseTaskInfo:
     model: github.com/evergreen-ci/evergreen/rest/model.APIBaseTaskInfo
@@ -99,11 +100,66 @@ models:
     model: github.com/evergreen-ci/evergreen/rest/model.TestLogs
   Duration:
     model: github.com/evergreen-ci/evergreen/rest/model.APIDuration
+  ProjectSettings:
+    model: github.com/evergreen-ci/evergreen/rest/model.APIProjectSettings
+    fields:
+      githubWebhooksEnabled:
+        resolver: true
+      vars:
+        resolver: true
+      aliases:
+        resolver: true
+      subscriptions:
+        resolver: true
   Project:
     model: github.com/evergreen-ci/evergreen/rest/model.APIProjectRef
     fields:
       patches:
         resolver: true
+  ProjectInput:
+    model: github.com/evergreen-ci/evergreen/rest/model.APIProjectRef
+  CommitQueueParams:
+    model: github.com/evergreen-ci/evergreen/rest/model.APICommitQueueParams
+  PatchTriggerAlias:
+    model: github.com/evergreen-ci/evergreen/rest/model.APIPatchTriggerDefinition
+  TaskSpecifier:
+    model: github.com/evergreen-ci/evergreen/rest/model.APITaskSpecifier
+  TriggerAlias:
+    model: github.com/evergreen-ci/evergreen/rest/model.APITriggerDefinition
+  PeriodicBuild:
+    model: github.com/evergreen-ci/evergreen/rest/model.APIPeriodicBuildDefinition
+  TaskSyncOptions:
+    model: github.com/evergreen-ci/evergreen/rest/model.APITaskSyncOptions
+  WorkstationConfig:
+    model: github.com/evergreen-ci/evergreen/rest/model.APIWorkstationConfig
+  WorkstationSetupCommand:
+    model: github.com/evergreen-ci/evergreen/rest/model.APIWorkstationSetupCommand
+  ProjectVars:
+    model: github.com/evergreen-ci/evergreen/rest/model.APIProjectVars
+    fields:
+      privateVars:
+        resolver: true
+  ProjectAlias:
+    model: github.com/evergreen-ci/evergreen/rest/model.APIProjectAlias
+  ProjectSubscription:
+    model: github.com/evergreen-ci/evergreen/rest/model.APISubscription
+  ProjectSubscriber:
+    model: github.com/evergreen-ci/evergreen/rest/model.APISubscriber
+    fields:
+      subscriber:
+        resolver: true
+  GithubPRSubscriber:
+    model: github.com/evergreen-ci/evergreen/rest/model.APIGithubPRSubscriber
+  GithubCheckSubscriber:
+    model: github.com/evergreen-ci/evergreen/rest/model.APIGithubCheckSubscriber
+  WebhookSubscriber:
+    model: github.com/evergreen-ci/evergreen/rest/model.APIWebhookSubscriber
+  WebhookHeader:
+    model: github.com/evergreen-ci/evergreen/rest/model.APIWebhookHeader
+  JiraIssueSubscriber:
+    model: github.com/evergreen-ci/evergreen/rest/model.APIJIRAIssueSubscriber
+  Selector:
+    model: github.com/evergreen-ci/evergreen/rest/model.APISelector
   User:
     model: github.com/evergreen-ci/evergreen/rest/model.APIDBUser
     fields:
@@ -183,3 +239,22 @@ models:
     model: github.com/evergreen-ci/evergreen/rest/model.APIAWSConfig
   SpawnHostConfig:
     model: github.com/evergreen-ci/evergreen/rest/model.APISpawnHostConfig
+  Version:
+    model: github.com/evergreen-ci/evergreen/rest/model.APIVersion
+    fields:
+      status:
+        resolver: true
+  BuildVariantTuple:
+    model: github.com/evergreen-ci/evergreen/model/task.BuildVariantTuple
+  StatusCount:
+    model: github.com/evergreen-ci/evergreen/model/task.StatusCount
+  TaskLogs:
+    fields:
+      eventLogs:
+        resolver: true
+      taskLogs:
+        resolver: true
+      systemLogs:
+        resolver: true
+      agentLogs:
+        resolver: true

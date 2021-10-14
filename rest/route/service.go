@@ -32,6 +32,7 @@ func AttachHandler(app *gimlet.APIApp, opts HandlerOpts) {
 	checkTask := NewTaskAuthMiddleware(sc)
 	checkTaskHost := NewTaskHostAuthMiddleware(sc)
 	checkHost := NewHostAuthMiddleware(sc)
+	checkPod := NewPodAuthMiddleware(sc)
 	addProject := NewProjectContextMiddleware(sc)
 	checkProjectAdmin := NewProjectAdminMiddleware(sc)
 	checkRepoAdmin := NewRepoAdminMiddleware(sc)
@@ -99,7 +100,8 @@ func AttachHandler(app *gimlet.APIApp, opts HandlerOpts) {
 	app.AddRoute("/distros/{distro_id}/setup").Version(2).Patch().Wrap(editDistroSettings).RouteHandler(makeChangeDistroSetup(sc))
 
 	app.AddRoute("/hooks/github").Version(2).Post().RouteHandler(makeGithubHooksRoute(sc, opts.APIQueue, opts.GithubSecret, settings))
-	app.AddRoute("/hooks/aws").Version(2).Post().RouteHandler(makeAwsSnsRoute(sc, env, opts.APIQueue))
+	app.AddRoute("/hooks/aws").Version(2).Post().RouteHandler(makeEC2SNS(sc, env, opts.APIQueue))
+	app.AddRoute("/hooks/aws/ecs").Version(2).Post().RouteHandler(makeECSSNS(sc, env, opts.APIQueue))
 	app.AddRoute("/host/filter").Version(2).Get().Wrap(checkUser).RouteHandler(makeFetchHostFilter(sc))
 	app.AddRoute("/host/start_processes").Version(2).Post().Wrap(checkUser).RouteHandler(makeHostStartProcesses(sc, env))
 	app.AddRoute("/host/get_processes").Version(2).Get().Wrap(checkUser).RouteHandler(makeHostGetProcesses(sc, env))
@@ -108,6 +110,7 @@ func AttachHandler(app *gimlet.APIApp, opts HandlerOpts) {
 	app.AddRoute("/hosts").Version(2).Patch().Wrap(checkUser).RouteHandler(makeChangeHostsStatuses(sc))
 	app.AddRoute("/hosts/{host_id}").Version(2).Get().Wrap(checkUser).RouteHandler(makeGetHostByID(sc))
 	app.AddRoute("/hosts/{host_id}").Version(2).Patch().Wrap(checkUser).RouteHandler(makeHostModifyRouteManager(sc, env))
+	app.AddRoute("/hosts/{host_id}/disable").Version(2).Post().Wrap(checkHost).RouteHandler(makeDisableHostHandler(sc, env))
 	app.AddRoute("/hosts/{host_id}/stop").Version(2).Post().Wrap(checkUser).RouteHandler(makeHostStopManager(sc, env))
 	app.AddRoute("/hosts/{host_id}/start").Version(2).Post().Wrap(checkUser).RouteHandler(makeHostStartManager(sc, env))
 	app.AddRoute("/hosts/{host_id}/change_password").Version(2).Post().Wrap(checkUser).RouteHandler(makeHostChangePassword(sc, env))
@@ -121,6 +124,7 @@ func AttachHandler(app *gimlet.APIApp, opts HandlerOpts) {
 	app.AddRoute("/hosts/{host_id}/attach").Version(2).Post().Wrap(checkUser).RouteHandler(makeAttachVolume(sc, env))
 	app.AddRoute("/hosts/{host_id}/detach").Version(2).Post().Wrap(checkUser).RouteHandler(makeDetachVolume(sc, env))
 	app.AddRoute("/hosts/{host_id}/provisioning_options").Version(2).Get().Wrap(checkHost).RouteHandler(makeHostProvisioningOptionsGetHandler(sc))
+	app.AddRoute("/hosts/ip_address/{ip_address}").Version(2).Get().Wrap(checkUser).RouteHandler(makeGetHostByIpAddress(sc))
 	app.AddRoute("/volumes").Version(2).Get().Wrap(checkUser).RouteHandler(makeGetVolumes(sc))
 	app.AddRoute("/volumes").Version(2).Post().Wrap(checkUser).RouteHandler(makeCreateVolume(sc, env))
 	app.AddRoute("/volumes/{volume_id}").Version(2).Wrap(checkUser).Delete().RouteHandler(makeDeleteVolume(sc, env))
@@ -137,6 +141,10 @@ func AttachHandler(app *gimlet.APIApp, opts HandlerOpts) {
 	app.AddRoute("/patches/{patch_id}/raw").Version(2).Get().Wrap(checkUser, viewTasks).RouteHandler(makePatchRawHandler(sc))
 	app.AddRoute("/patches/{patch_id}/restart").Version(2).Post().Wrap(checkUser, submitPatches).RouteHandler(makeRestartPatch(sc))
 	app.AddRoute("/patches/{patch_id}/merge_patch").Version(2).Put().Wrap(checkUser, addProject, submitPatches, checkCommitQueueItemOwner).RouteHandler(makeMergePatch(sc))
+	app.AddRoute("/pods/{pod_id}/agent/cedar_config").Version(2).Get().Wrap(checkPod).RouteHandler(makePodAgentCedarConfig(env.Settings()))
+	app.AddRoute("/pods/{pod_id}/agent/setup").Version(2).Get().Wrap(checkPod).RouteHandler(makePodAgentSetup(env.Settings()))
+	app.AddRoute("/pods/{pod_id}/agent/next_task").Version(2).Get().Wrap(checkPod).RouteHandler(makePodAgentNextTask(env, sc))
+	app.AddRoute("/pods").Version(2).Post().Wrap(adminSettings).RouteHandler(makePostPod(env, sc))
 	app.AddRoute("/projects").Version(2).Get().Wrap(checkUser).RouteHandler(makeFetchProjectsRoute(sc))
 	app.AddRoute("/projects/test_alias").Version(2).Get().Wrap(checkUser).RouteHandler(makeGetProjectAliasResultsHandler(sc))
 	app.AddRoute("/projects/{project_id}").Version(2).Delete().Wrap(checkUser, checkProjectAdmin, editProjectSettings).RouteHandler(makeDeleteProject(sc))
@@ -157,11 +165,13 @@ func AttachHandler(app *gimlet.APIApp, opts HandlerOpts) {
 	app.AddRoute("/projects/{project_id}/versions/tasks").Version(2).Get().Wrap(checkUser, viewTasks).RouteHandler(makeFetchProjectTasks(sc))
 	app.AddRoute("/projects/{project_id}/patch_trigger_aliases").Version(2).Get().Wrap(checkUser, viewTasks).RouteHandler(makeFetchPatchTriggerAliases(sc))
 	app.AddRoute("/projects/{project_id}/parameters").Version(2).Get().Wrap(checkUser, viewTasks).RouteHandler(makeFetchParameters(sc))
+	app.AddRoute("/projects/variables/rotate").Version(2).Put().Wrap(checkUser, createProject).RouteHandler(makeProjectVarsPut(sc))
 	app.AddRoute("/permissions").Version(2).Get().RouteHandler(&permissionsGetHandler{})
 	app.AddRoute("/repos/{repo_id}").Version(2).Get().Wrap(checkUser, viewProjectSettings).RouteHandler(makeGetRepoByID(sc))
 	app.AddRoute("/repos/{repo_id}").Version(2).Patch().Wrap(checkUser, checkRepoAdmin, editProjectSettings).RouteHandler(makePatchRepoByID(sc, env.Settings()))
 	app.AddRoute("/roles").Version(2).Get().Wrap(checkUser).RouteHandler(acl.NewGetAllRolesHandler(env.RoleManager()))
 	app.AddRoute("/roles").Version(2).Post().Wrap(checkUser).RouteHandler(acl.NewUpdateRoleHandler(env.RoleManager()))
+	app.AddRoute("/roles/{role_id}/users").Version(2).Get().Wrap(checkUser).RouteHandler(makeGetUsersWithRole(sc))
 	app.AddRoute("/scheduler/compare_tasks").Version(2).Post().Wrap(checkUser).RouteHandler(makeCompareTasksRoute(sc))
 	app.AddRoute("/status/cli_version").Version(2).Get().RouteHandler(makeFetchCLIVersionRoute(sc))
 	app.AddRoute("/status/hosts/distros").Version(2).Get().Wrap(checkUser).RouteHandler(makeHostStatusByDistroRoute(sc))
@@ -194,10 +204,20 @@ func AttachHandler(app *gimlet.APIApp, opts HandlerOpts) {
 	app.AddRoute("/users/{user_id}/permissions").Version(2).Post().Wrap(checkUser, editRoles).RouteHandler(makeModifyUserPermissions(sc, evergreen.GetEnvironment().RoleManager()))
 	app.AddRoute("/users/{user_id}/permissions").Version(2).Delete().Wrap(checkUser, editRoles).RouteHandler(makeDeleteUserPermissions(sc, evergreen.GetEnvironment().RoleManager()))
 	app.AddRoute("/users/{user_id}/roles").Version(2).Post().Wrap(checkUser, editRoles).RouteHandler(makeModifyUserRoles(sc, evergreen.GetEnvironment().RoleManager()))
+	app.AddRoute("/users/permissions").Version(2).Get().Wrap(checkUser).RouteHandler(makeGetAllUsersPermissions(sc, evergreen.GetEnvironment().RoleManager()))
 	app.AddRoute("/versions").Version(2).Put().Wrap(checkUser).RouteHandler(makeVersionCreateHandler(sc))
 	app.AddRoute("/versions/{version_id}").Version(2).Get().Wrap(viewTasks).RouteHandler(makeGetVersionByID(sc))
 	app.AddRoute("/versions/{version_id}/abort").Version(2).Post().Wrap(checkUser, editTasks).RouteHandler(makeAbortVersion(sc))
 	app.AddRoute("/versions/{version_id}/builds").Version(2).Get().Wrap(viewTasks).RouteHandler(makeGetVersionBuilds(sc))
 	app.AddRoute("/versions/{version_id}/restart").Version(2).Post().Wrap(checkUser, editTasks).RouteHandler(makeRestartVersion(sc))
 	app.AddRoute("/versions/{version_id}/annotations").Version(2).Get().Wrap(checkUser, viewAnnotations).RouteHandler(makeFetchAnnotationsByVersion(sc))
+
+	// Add an options method to every POST request to handle pre-flight Options requests.
+	// These requests must not check for credentials and just validate whether a route exists
+	// And allows requests from a origin.
+	for _, route := range app.Routes() {
+		if route.HasMethod("POST") {
+			app.AddRoute(route.GetRoute()).Version(2).Options().RouteHandler(makeOptionsHandler())
+		}
+	}
 }

@@ -26,7 +26,7 @@ import (
 	"github.com/mongodb/grip/message"
 	"github.com/mongodb/grip/sometimes"
 	"github.com/pkg/errors"
-	yaml "gopkg.in/yaml.v2"
+	yaml "gopkg.in/yaml.v3"
 )
 
 const (
@@ -62,6 +62,8 @@ func NewCommitQueueJob(env evergreen.Environment, queueID string, id string) amb
 	job.QueueID = queueID
 	job.env = env
 	job.SetID(fmt.Sprintf("%s:%s_%s", commitQueueJobName, queueID, id))
+	job.SetShouldApplyScopesOnEnqueue(true)
+	job.SetScopes([]string{fmt.Sprintf("%s.%s", commitQueueJobName, queueID)})
 
 	return job
 }
@@ -89,7 +91,7 @@ func (j *commitQueueJob) Run(ctx context.Context) {
 	}
 
 	// stop if project is disabled
-	projectRef, err := model.FindOneProjectRef(j.QueueID)
+	projectRef, err := model.FindMergedProjectRef(j.QueueID)
 	if err != nil {
 		j.AddError(errors.Wrapf(err, "can't find project for queue id %s", j.QueueID))
 		return
@@ -610,7 +612,7 @@ func AddMergeTaskAndVariant(patchDoc *patch.Patch, project *model.Project, proje
 	project.Tasks = append(project.Tasks, mergeTask)
 	project.TaskGroups = append(project.TaskGroups, mergeTaskGroup)
 
-	validationErrors := validator.CheckProjectSyntax(project)
+	validationErrors := validator.CheckProjectSyntax(project, true)
 	validationErrors = append(validationErrors, validator.CheckProjectSettings(project, projectRef)...)
 	catcher := grip.NewBasicCatcher()
 	for _, validationErr := range validationErrors.AtLevel(validator.Error) {

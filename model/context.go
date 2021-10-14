@@ -47,7 +47,7 @@ func LoadContext(taskId, buildId, versionId, patchId, projectId string) (Context
 	// Try to load project for the ID we found, and set cookie with it for subsequent requests
 	if len(projectId) > 0 {
 		// Also lookup the ProjectRef itself and add it to context.
-		ctx.ProjectRef, err = FindOneProjectRef(projectId)
+		ctx.ProjectRef, err = FindMergedProjectRef(projectId)
 		if err != nil {
 			return ctx, err
 		}
@@ -97,7 +97,7 @@ func (ctx *Context) populateTaskBuildVersion(taskId, buildId, versionId string) 
 	var err error
 	// Fetch task if there's a task ID present; if we find one, populate build/version IDs from it
 	if len(taskId) > 0 {
-		ctx.Task, err = task.FindOne(task.ById(taskId))
+		ctx.Task, err = task.FindOneId(taskId)
 		if err != nil || ctx.Task == nil {
 			// if no task found, see if this is an old task
 			var tasks []task.Task

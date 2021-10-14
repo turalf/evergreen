@@ -22,7 +22,7 @@ import (
 	"github.com/pkg/errors"
 	ignore "github.com/sabhiram/go-git-ignore"
 	mgobson "gopkg.in/mgo.v2/bson"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -32,32 +32,41 @@ const (
 )
 
 type Project struct {
-	Enabled           bool                       `yaml:"enabled,omitempty" bson:"enabled"`
-	Stepback          bool                       `yaml:"stepback,omitempty" bson:"stepback"`
-	PreErrorFailsTask bool                       `yaml:"pre_error_fails_task,omitempty" bson:"pre_error_fails_task,omitempty"`
-	OomTracker        bool                       `yaml:"oom_tracker,omitempty" bson:"oom_tracker"`
-	BatchTime         int                        `yaml:"batchtime,omitempty" bson:"batch_time"`
-	Owner             string                     `yaml:"owner,omitempty" bson:"owner_name"`
-	Repo              string                     `yaml:"repo,omitempty" bson:"repo_name"`
-	RemotePath        string                     `yaml:"remote_path,omitempty" bson:"remote_path"`
-	Branch            string                     `yaml:"branch,omitempty" bson:"branch_name"`
-	Identifier        string                     `yaml:"identifier,omitempty" bson:"identifier"`
-	DisplayName       string                     `yaml:"display_name,omitempty" bson:"display_name"`
-	CommandType       string                     `yaml:"command_type,omitempty" bson:"command_type"`
-	Ignore            []string                   `yaml:"ignore,omitempty" bson:"ignore"`
-	Parameters        []ParameterInfo            `yaml:"parameters,omitempty" bson:"parameters,omitempty"`
-	Pre               *YAMLCommandSet            `yaml:"pre,omitempty" bson:"pre"`
-	Post              *YAMLCommandSet            `yaml:"post,omitempty" bson:"post"`
-	Timeout           *YAMLCommandSet            `yaml:"timeout,omitempty" bson:"timeout"`
-	EarlyTermination  *YAMLCommandSet            `yaml:"early_termination,omitempty" bson:"early_termination,omitempty"`
-	CallbackTimeout   int                        `yaml:"callback_timeout_secs,omitempty" bson:"callback_timeout_secs"`
-	Modules           ModuleList                 `yaml:"modules,omitempty" bson:"modules"`
-	BuildVariants     BuildVariants              `yaml:"buildvariants,omitempty" bson:"build_variants"`
-	Functions         map[string]*YAMLCommandSet `yaml:"functions,omitempty" bson:"functions"`
-	TaskGroups        []TaskGroup                `yaml:"task_groups,omitempty" bson:"task_groups"`
-	Tasks             []ProjectTask              `yaml:"tasks,omitempty" bson:"tasks"`
-	ExecTimeoutSecs   int                        `yaml:"exec_timeout_secs,omitempty" bson:"exec_timeout_secs"`
-	Loggers           *LoggerConfig              `yaml:"loggers,omitempty" bson:"loggers,omitempty"`
+	Enabled                bool                           `yaml:"enabled,omitempty" bson:"enabled"`
+	Stepback               bool                           `yaml:"stepback,omitempty" bson:"stepback"`
+	PreErrorFailsTask      bool                           `yaml:"pre_error_fails_task,omitempty" bson:"pre_error_fails_task,omitempty"`
+	PostErrorFailsTask     bool                           `yaml:"post_error_fails_task,omitempty" bson:"post_error_fails_task,omitempty"`
+	OomTracker             bool                           `yaml:"oom_tracker,omitempty" bson:"oom_tracker"`
+	BatchTime              int                            `yaml:"batchtime,omitempty" bson:"batch_time"`
+	Owner                  string                         `yaml:"owner,omitempty" bson:"owner_name"`
+	Repo                   string                         `yaml:"repo,omitempty" bson:"repo_name"`
+	RemotePath             string                         `yaml:"remote_path,omitempty" bson:"remote_path"`
+	Branch                 string                         `yaml:"branch,omitempty" bson:"branch_name"`
+	Identifier             string                         `yaml:"identifier,omitempty" bson:"identifier"`
+	DisplayName            string                         `yaml:"display_name,omitempty" bson:"display_name"`
+	CommandType            string                         `yaml:"command_type,omitempty" bson:"command_type"`
+	Ignore                 []string                       `yaml:"ignore,omitempty" bson:"ignore"`
+	Parameters             []ParameterInfo                `yaml:"parameters,omitempty" bson:"parameters,omitempty"`
+	Pre                    *YAMLCommandSet                `yaml:"pre,omitempty" bson:"pre"`
+	Post                   *YAMLCommandSet                `yaml:"post,omitempty" bson:"post"`
+	Timeout                *YAMLCommandSet                `yaml:"timeout,omitempty" bson:"timeout"`
+	EarlyTermination       *YAMLCommandSet                `yaml:"early_termination,omitempty" bson:"early_termination,omitempty"`
+	CallbackTimeout        int                            `yaml:"callback_timeout_secs,omitempty" bson:"callback_timeout_secs"`
+	Modules                ModuleList                     `yaml:"modules,omitempty" bson:"modules"`
+	BuildVariants          BuildVariants                  `yaml:"buildvariants,omitempty" bson:"build_variants"`
+	Functions              map[string]*YAMLCommandSet     `yaml:"functions,omitempty" bson:"functions"`
+	TaskGroups             []TaskGroup                    `yaml:"task_groups,omitempty" bson:"task_groups"`
+	Tasks                  []ProjectTask                  `yaml:"tasks,omitempty" bson:"tasks"`
+	ExecTimeoutSecs        int                            `yaml:"exec_timeout_secs,omitempty" bson:"exec_timeout_secs"`
+	Loggers                *LoggerConfig                  `yaml:"loggers,omitempty" bson:"loggers,omitempty"`
+	TaskAnnotationSettings *evergreen.AnnotationsSettings `yaml:"task_annotation_settings,omitempty" bson:"task_annotation_settings,omitempty"`
+	BuildBaronSettings     *evergreen.BuildBaronSettings  `yaml:"build_baron_settings,omitempty" bson:"build_baron_settings,omitempty"`
+	PerfEnabled            bool                           `yaml:"perf_enabled,omitempty" bson:"perf_enabled,omitempty"`
+
+	// The below fields can be set for the ProjectRef struct on the project page, or in the project config yaml.
+	// Values for the below fields set on this struct when TranslateProject is called for the project parser will
+	// take precedence over the project page and will be the configs used for a given project during runtime.
+	DeactivatePrevious bool `yaml:"deactivate_previous" bson:"deactivate_previous,omitempty"`
 
 	// Flag that indicates a project as requiring user authentication
 	Private bool `yaml:"private,omitempty" bson:"private"`
@@ -110,6 +119,8 @@ type BuildVariantTaskUnit struct {
 	// If CronBatchTime is not empty, then override the project settings with cron syntax,
 	// with BatchTime and CronBatchTime being mutually exclusive.
 	CronBatchTime string `yaml:"cron,omitempty" bson:"cron,omitempty"`
+	// If Activate is set to false, then we don't initially activate the task.
+	Activate *bool `yaml:"activate,omitempty" bson:"activate,omitempty"`
 }
 
 func (b BuildVariant) Get(name string) (BuildVariantTaskUnit, error) {
@@ -121,6 +132,15 @@ func (b BuildVariant) Get(name string) (BuildVariantTaskUnit, error) {
 
 	return BuildVariantTaskUnit{}, errors.Errorf("could not find task %s in build variant %s",
 		name, b.Name)
+}
+
+func (b BuildVariant) GetDisplayTask(name string) *patch.DisplayTask {
+	for _, dt := range b.DisplayTasks {
+		if dt.Name == name {
+			return &dt
+		}
+	}
+	return nil
 }
 
 type BuildVariants []BuildVariant
@@ -234,6 +254,9 @@ type BuildVariant struct {
 	// with BatchTime and CronBatchTime being mutually exclusive.
 	CronBatchTime string `yaml:"cron,omitempty" bson:"cron,omitempty"`
 
+	// If Activate is set to false, then we don't initially activate the build variant.
+	Activate *bool `yaml:"activate,omitempty" bson:"activate,omitempty"`
+
 	// Use a *bool so that there are 3 possible states:
 	//   1. nil   = not overriding the project setting (default)
 	//   2. true  = overriding the project setting with true
@@ -261,6 +284,11 @@ type Module struct {
 	Repo   string `yaml:"repo,omitempty" bson:"repo"`
 	Prefix string `yaml:"prefix,omitempty" bson:"prefix"`
 	Ref    string `yaml:"ref,omitempty" bson:"ref"`
+}
+
+type Include struct {
+	FileName string `yaml:"filename,omitempty" bson:"filename,omitempty"`
+	Module   string `yaml:"module,omitempty" bson:"module,omitempty"`
 }
 
 type ModuleList []Module
@@ -475,16 +503,17 @@ type TaskGroup struct {
 	Name string `yaml:"name" bson:"name"`
 
 	// data about the task group
-	MaxHosts              int             `yaml:"max_hosts" bson:"max_hosts"`
-	SetupGroupFailTask    bool            `yaml:"setup_group_can_fail_task" bson:"setup_group_can_fail_task"`
-	SetupGroupTimeoutSecs int             `yaml:"setup_group_timeout_secs" bson:"setup_group_timeout_secs"`
-	SetupGroup            *YAMLCommandSet `yaml:"setup_group" bson:"setup_group"`
-	TeardownGroup         *YAMLCommandSet `yaml:"teardown_group" bson:"teardown_group"`
-	SetupTask             *YAMLCommandSet `yaml:"setup_task" bson:"setup_task"`
-	TeardownTask          *YAMLCommandSet `yaml:"teardown_task" bson:"teardown_task"`
-	Timeout               *YAMLCommandSet `yaml:"timeout,omitempty" bson:"timeout"`
-	Tasks                 []string        `yaml:"tasks" bson:"tasks"`
-	Tags                  []string        `yaml:"tags,omitempty" bson:"tags"`
+	MaxHosts                int             `yaml:"max_hosts" bson:"max_hosts"`
+	SetupGroupFailTask      bool            `yaml:"setup_group_can_fail_task" bson:"setup_group_can_fail_task"`
+	SetupGroupTimeoutSecs   int             `yaml:"setup_group_timeout_secs" bson:"setup_group_timeout_secs"`
+	SetupGroup              *YAMLCommandSet `yaml:"setup_group" bson:"setup_group"`
+	TeardownTaskCanFailTask bool            `yaml:"teardown_task_can_fail_task" bson:"teardown_task_can_fail_task"`
+	TeardownGroup           *YAMLCommandSet `yaml:"teardown_group" bson:"teardown_group"`
+	SetupTask               *YAMLCommandSet `yaml:"setup_task" bson:"setup_task"`
+	TeardownTask            *YAMLCommandSet `yaml:"teardown_task" bson:"teardown_task"`
+	Timeout                 *YAMLCommandSet `yaml:"timeout,omitempty" bson:"timeout"`
+	Tasks                   []string        `yaml:"tasks" bson:"tasks"`
+	Tags                    []string        `yaml:"tags,omitempty" bson:"tags"`
 	// ShareProcs causes processes to persist between task group tasks.
 	ShareProcs bool `yaml:"share_processes" bson:"share_processes"`
 }
@@ -559,6 +588,19 @@ func (o *LogOpts) IsValid() error {
 	}
 
 	return catcher.Resolve()
+}
+
+func mergeAllLogs(main, add *LoggerConfig) *LoggerConfig {
+	if main == nil {
+		return add
+	} else if add == nil {
+		return main
+	} else {
+		main.Agent = append(main.Agent, add.Agent...)
+		main.System = append(main.System, add.System...)
+		main.Task = append(main.Task, add.Task...)
+	}
+	return main
 }
 
 const (
@@ -698,6 +740,10 @@ func NewTaskIdTable(p *Project, v *Version, sourceRev, defID string) TaskIdConfi
 
 	sort.Stable(p.BuildVariants)
 
+	projectIdentifier, err := GetIdentifierForProject(p.Identifier)
+	if err != nil { // default to ID
+		projectIdentifier = p.Identifier
+	}
 	for _, bv := range p.BuildVariants {
 		rev := v.Revision
 		if evergreen.IsPatchRequester(v.Requester) {
@@ -716,19 +762,19 @@ func NewTaskIdTable(p *Project, v *Version, sourceRev, defID string) TaskIdConfi
 			}
 			if tg := p.FindTaskGroup(t.Name); tg != nil {
 				for _, groupTask := range tg.Tasks {
-					taskId := generateId(groupTask, p, &bv, rev, v)
+					taskId := generateId(groupTask, projectIdentifier, &bv, rev, v)
 					execTable[TVPair{bv.Name, groupTask}] = util.CleanName(taskId)
 				}
 			} else {
 				// create a unique Id for each task
-				taskId := generateId(t.Name, p, &bv, rev, v)
+				taskId := generateId(t.Name, projectIdentifier, &bv, rev, v)
 				execTable[TVPair{bv.Name, t.Name}] = util.CleanName(taskId)
 			}
 		}
 
 		for _, dt := range bv.DisplayTasks {
 			name := fmt.Sprintf("display_%s", dt.Name)
-			taskId := generateId(name, p, &bv, rev, v)
+			taskId := generateId(name, projectIdentifier, &bv, rev, v)
 			displayTable[TVPair{bv.Name, dt.Name}] = util.CleanName(taskId)
 		}
 	}
@@ -736,7 +782,7 @@ func NewTaskIdTable(p *Project, v *Version, sourceRev, defID string) TaskIdConfi
 }
 
 // NewPatchTaskIdTable constructs a new TaskIdTable (map of [variant, task display name]->[task  id])
-func NewPatchTaskIdTable(proj *Project, v *Version, tasks TaskVariantPairs) TaskIdConfig {
+func NewPatchTaskIdTable(proj *Project, v *Version, tasks TaskVariantPairs, projectIdentifier string) TaskIdConfig {
 	config := TaskIdConfig{ExecutionTasks: TaskIdTable{}, DisplayTasks: TaskIdTable{}}
 	processedVariants := map[string]bool{}
 
@@ -765,7 +811,7 @@ func NewPatchTaskIdTable(proj *Project, v *Version, tasks TaskVariantPairs) Task
 			continue
 		}
 		processedVariants[vt.Variant] = true
-		config.ExecutionTasks = generateIdsForVariant(vt, proj, v, tasks.ExecTasks, config.ExecutionTasks, tgMap)
+		config.ExecutionTasks = generateIdsForVariant(vt, proj, v, tasks.ExecTasks, config.ExecutionTasks, tgMap, projectIdentifier)
 	}
 	processedVariants = map[string]bool{}
 	for _, vt := range tasks.DisplayTasks {
@@ -774,12 +820,13 @@ func NewPatchTaskIdTable(proj *Project, v *Version, tasks TaskVariantPairs) Task
 			continue
 		}
 		processedVariants[vt.Variant] = true
-		config.DisplayTasks = generateIdsForVariant(vt, proj, v, tasks.DisplayTasks, config.DisplayTasks, tgMap)
+		config.DisplayTasks = generateIdsForVariant(vt, proj, v, tasks.DisplayTasks, config.DisplayTasks, tgMap, projectIdentifier)
 	}
 	return config
 }
 
-func generateIdsForVariant(vt TVPair, proj *Project, v *Version, tasks TVPairSet, table TaskIdTable, tgMap map[string]TaskGroup) TaskIdTable {
+func generateIdsForVariant(vt TVPair, proj *Project, v *Version, tasks TVPairSet, table TaskIdTable,
+	tgMap map[string]TaskGroup, projectIdentifier string) TaskIdTable {
 	if table == nil {
 		table = map[TVPair]string{}
 	}
@@ -794,26 +841,26 @@ func generateIdsForVariant(vt TVPair, proj *Project, v *Version, tasks TVPairSet
 	}
 	for _, t := range projBV.Tasks { // create Ids for each task that can run on the variant and is requested by the patch.
 		if utility.StringSliceContains(taskNamesForVariant, t.Name) {
-			table[TVPair{vt.Variant, t.Name}] = util.CleanName(generateId(t.Name, proj, projBV, rev, v))
+			table[TVPair{vt.Variant, t.Name}] = util.CleanName(generateId(t.Name, projectIdentifier, projBV, rev, v))
 		} else if tg, ok := tgMap[t.Name]; ok {
 			for _, name := range tg.Tasks {
-				table[TVPair{vt.Variant, name}] = util.CleanName(generateId(name, proj, projBV, rev, v))
+				table[TVPair{vt.Variant, name}] = util.CleanName(generateId(name, projectIdentifier, projBV, rev, v))
 			}
 		}
 	}
 	for _, t := range projBV.DisplayTasks {
 		// create Ids for each task that can run on the variant and is requested by the patch.
 		if utility.StringSliceContains(taskNamesForVariant, t.Name) {
-			table[TVPair{vt.Variant, t.Name}] = util.CleanName(generateId(fmt.Sprintf("display_%s", t.Name), proj, projBV, rev, v))
+			table[TVPair{vt.Variant, t.Name}] = util.CleanName(generateId(fmt.Sprintf("display_%s", t.Name), projectIdentifier, projBV, rev, v))
 		}
 	}
 
 	return table
 }
 
-func generateId(name string, proj *Project, projBV *BuildVariant, rev string, v *Version) string {
+func generateId(name string, projectIdentifier string, projBV *BuildVariant, rev string, v *Version) string {
 	return fmt.Sprintf("%s_%s_%s_%s_%s",
-		proj.Identifier,
+		projectIdentifier,
 		projBV.Name,
 		name,
 		rev,
@@ -840,7 +887,7 @@ func PopulateExpansions(t *task.Task, h *host.Host, oauthToken string) (util.Exp
 		return nil, errors.New("host cannot be nil")
 	}
 
-	projectRef, err := FindOneProjectRef(t.Project)
+	projectRef, err := FindBranchProjectRef(t.Project)
 	if err != nil {
 		return nil, errors.Wrap(err, "problem finding project ref")
 	}
@@ -856,9 +903,11 @@ func PopulateExpansions(t *task.Task, h *host.Host, oauthToken string) (util.Exp
 	expansions.Put(evergreen.GlobalGitHubTokenExpansion, oauthToken)
 	expansions.Put("distro_id", h.Distro.Id)
 	expansions.Put("project", projectRef.Identifier)
-	expansions.Put("project_identifier", projectRef.Identifier) // TODO: depreciate
+	expansions.Put("project_identifier", projectRef.Identifier) // TODO: deprecate
 	expansions.Put("project_id", projectRef.Id)
-
+	if t.ActivatedBy == evergreen.StepbackTaskActivator {
+		expansions.Put("is_stepback", "true")
+	}
 	if t.TriggerID != "" {
 		expansions.Put("trigger_event_identifier", t.TriggerID)
 		expansions.Put("trigger_event_type", t.TriggerType)
@@ -890,7 +939,7 @@ func PopulateExpansions(t *task.Task, h *host.Host, oauthToken string) (util.Exp
 			upstreamProjectID = upstreamBuild.Project
 		}
 		var upstreamProject *ProjectRef
-		upstreamProject, err = FindOneProjectRef(upstreamProjectID)
+		upstreamProject, err = FindBranchProjectRef(upstreamProjectID)
 		if err != nil {
 			return nil, errors.Wrap(err, "error finding project")
 		}
@@ -963,6 +1012,7 @@ func PopulateExpansions(t *task.Task, h *host.Host, oauthToken string) (util.Exp
 			expansions.Put("github_org", p.GithubPatchData.BaseOwner)
 			expansions.Put("github_repo", p.GithubPatchData.BaseRepo)
 			expansions.Put("github_author", p.GithubPatchData.Author)
+			expansions.Put("github_commit", p.GithubPatchData.HeadHash)
 		}
 	} else {
 		expansions.Put("revision_order_id", strconv.Itoa(v.RevisionOrderNumber))
@@ -1134,7 +1184,7 @@ func FindLatestVersionWithValidProject(projectId string) (*Version, *Project, er
 }
 
 func (bvt *BuildVariantTaskUnit) HasBatchTime() bool {
-	return bvt.CronBatchTime != "" || bvt.BatchTime != nil
+	return bvt.CronBatchTime != "" || bvt.BatchTime != nil || bvt.Activate != nil
 }
 
 func (p *Project) FindTaskForVariant(task, variant string) *BuildVariantTaskUnit {
@@ -1617,7 +1667,7 @@ func (p *Project) CommandsRunOnBV(cmds []PluginCommandConf, cmd, bv string) []Pl
 	for _, c := range cmds {
 		if c.Function != "" {
 			f, ok := p.Functions[c.Function]
-			if !ok {
+			if !ok || f == nil {
 				continue
 			}
 			for _, funcCmd := range f.List() {

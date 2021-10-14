@@ -91,7 +91,7 @@ func GetStatsByDistro() (DistroStats, error) {
 	return stats, nil
 }
 
-// GetProvierCounts returns data on the number of hosts by different provider stats.
+// GetProviderCounts returns data on the number of hosts by different provider stats.
 func GetProviderCounts() (ProviderStats, error) {
 	stats := []StatsByProvider{}
 	if err := db.Aggregate(Collection, statsByProviderPipeline(), &stats); err != nil {
@@ -110,11 +110,12 @@ func statsByDistroPipeline() []bson.M {
 	return []bson.M{
 		{
 			"$match": bson.M{
+				// Don't count user-spawned hosts (EVG-15232).
+				// This also excludes hostcreate tasks (EVG-14363), as their started_by field is the task name.
+				StartedByKey: evergreen.User,
 				StatusKey: bson.M{
 					"$in": evergreen.ActiveStatus,
 				},
-				// exclude hostcreate tasks EVG-14363
-				bsonutil.GetDottedKeyName(SpawnOptionsKey, SpawnOptionsSpawnedByTaskKey): bson.M{"$ne": true},
 			},
 		},
 		{

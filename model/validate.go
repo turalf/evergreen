@@ -12,17 +12,15 @@ import (
 )
 
 type (
-	apiTaskKey       int
-	apiHostKey       int
-	apiProjectKey    int
-	apiProjectRefKey int
+	apiTaskKey    int
+	apiHostKey    int
+	apiProjectKey int
 )
 
 const (
-	ApiTaskKey       apiTaskKey       = 0
-	ApiHostKey       apiHostKey       = 0
-	ApiProjectKey    apiProjectKey    = 0
-	ApiProjectRefKey apiProjectRefKey = 0
+	ApiTaskKey    apiTaskKey    = 0
+	ApiHostKey    apiHostKey    = 0
+	ApiProjectKey apiProjectKey = 0
 )
 
 // ValidateTask ensures that a task ID is set and corresponds to a task in the
@@ -32,7 +30,7 @@ func ValidateTask(taskId string, checkSecret bool, r *http.Request) (*task.Task,
 	if taskId == "" {
 		return nil, http.StatusBadRequest, errors.New("missing task id")
 	}
-	t, err := task.FindOne(task.ById(taskId))
+	t, err := task.FindOneId(taskId)
 	if err != nil {
 		return nil, http.StatusInternalServerError, err
 	}
@@ -42,8 +40,7 @@ func ValidateTask(taskId string, checkSecret bool, r *http.Request) (*task.Task,
 	if checkSecret {
 		secret := r.Header.Get(evergreen.TaskSecretHeader)
 		if secret != t.Secret {
-			return nil, http.StatusConflict, errors.Errorf("Wrong secret sent for task %s: Expected %s but got %s",
-				taskId, t.Secret, secret)
+			return nil, http.StatusConflict, errors.Errorf("Wrong secret sent for task '%s'", taskId)
 		}
 	}
 	return t, http.StatusOK, nil

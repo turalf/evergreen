@@ -206,10 +206,14 @@ func cleanUpTimedOutTask(ctx context.Context, env evergreen.Environment, id stri
 
 	// try to reset the task
 	if t.IsPartOfDisplay() {
-		if err = t.DisplayTask.SetResetWhenFinished(); err != nil {
+		dt, err := t.GetDisplayTask()
+		if err != nil {
+			return errors.Wrapf(err, "error getting display task")
+		}
+		if err = dt.SetResetWhenFinished(); err != nil {
 			return errors.Wrap(err, "can't mark display task for reset")
 		}
-		return errors.Wrap(model.MarkEnd(t, "monitor", time.Now(), detail, false, &model.StatusChanges{}), "error marking execution task ended")
+		return errors.Wrap(model.MarkEnd(t, "monitor", time.Now(), detail, false), "error marking execution task ended")
 	}
 
 	return errors.Wrapf(model.TryResetTask(t.Id, "", "monitor", detail), "error trying to reset task %s", t.Id)

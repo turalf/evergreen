@@ -141,8 +141,19 @@ func (ac *legacyClient) modifyExisting(patchId, action string) error {
 }
 
 // ValidateLocalConfig validates the local project config with the server
-func (ac *legacyClient) ValidateLocalConfig(data []byte) (validator.ValidationErrors, error) {
-	resp, err := ac.post("validate", bytes.NewBuffer(data))
+func (ac *legacyClient) ValidateLocalConfig(data []byte, quiet, includeLong bool) (validator.ValidationErrors, error) {
+	input := validator.ValidationInput{
+		ProjectYaml: data,
+		Quiet:       quiet,
+		IncludeLong: includeLong,
+	}
+	rPipe, wPipe := io.Pipe()
+	encoder := json.NewEncoder(wPipe)
+	go func() {
+		grip.Warning(encoder.Encode(input))
+		grip.Warning(wPipe.Close())
+	}()
+	resp, err := ac.post("validate", rPipe)
 	if err != nil {
 		return nil, err
 	}
@@ -284,15 +295,19 @@ func (ac *legacyClient) GetPatchedConfig(patchId string) (*model.Project, error)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := model.LoadProjectInto(yamlBytes, "", ref); err != nil {
+	if _, err := model.LoadProjectInto(resp.Request.Context(), yamlBytes, nil, "", ref); err != nil {
 		return nil, err
 	}
 	return ref, nil
 }
 
 // GetConfig fetches the config yaml from the API server for a given project ID.
-func (ac *legacyClient) GetConfig(versionId string) ([]byte, error) {
-	resp, err := ac.get(fmt.Sprintf("versions/%v/config", versionId), nil)
+func (ac *legacyClient) GetConfig(versionId string, shouldFetch bool) ([]byte, error) {
+	path := fmt.Sprintf("versions/%v/config", versionId)
+	if shouldFetch {
+		path = fmt.Sprintf("%s?latest_parser=true", path)
+	}
+	resp, err := ac.get(path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -511,6 +526,7 @@ func (ac *legacyClient) PutPatch(incomingPatch patchSubmission) (*patch.Patch, e
 	data := struct {
 		Description       string             `json:"desc"`
 		Project           string             `json:"project"`
+		Path              string             `json:"path"`
 		PatchBytes        []byte             `json:"patch_bytes"`
 		Githash           string             `json:"githash"`
 		Alias             string             `json:"alias"`
@@ -529,6 +545,7 @@ func (ac *legacyClient) PutPatch(incomingPatch patchSubmission) (*patch.Patch, e
 	}{
 		Description:       incomingPatch.description,
 		Project:           incomingPatch.projectName,
+		Path:              incomingPatch.path,
 		PatchBytes:        []byte(incomingPatch.patchData),
 		Githash:           incomingPatch.base,
 		Alias:             incomingPatch.alias,

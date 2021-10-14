@@ -3,6 +3,7 @@ package data
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/evergreen-ci/evergreen/thirdparty"
 	"github.com/evergreen-ci/evergreen/units"
 	"github.com/evergreen-ci/evergreen/validator"
+	"github.com/evergreen-ci/gimlet"
 	"github.com/evergreen-ci/utility"
 	"github.com/google/go-github/github"
 	"github.com/mongodb/grip"
@@ -59,7 +61,8 @@ func (pc *DBCommitQueueConnector) AddPatchForPr(ctx context.Context, projectRef 
 		return "", err
 	}
 
-	patchDoc, err := patch.MakeNewMergePatch(pr, projectRef.Id, evergreen.CommitQueueAlias, pr.GetTitle(), messageOverride)
+	title := fmt.Sprintf("%s (#%d)", pr.GetTitle(), prNum)
+	patchDoc, err := patch.MakeNewMergePatch(pr, projectRef.Id, evergreen.CommitQueueAlias, title, messageOverride)
 	if err != nil {
 		return "", errors.Wrap(err, "unable to make commit queue patch")
 	}
@@ -69,7 +72,7 @@ func (pc *DBCommitQueueConnector) AddPatchForPr(ctx context.Context, projectRef 
 		return "", err
 	}
 
-	errs := validator.CheckProjectSyntax(projectConfig)
+	errs := validator.CheckProjectSyntax(projectConfig, false)
 	errs = append(errs, validator.CheckProjectSettings(projectConfig, &projectRef)...)
 	catcher := grip.NewBasicCatcher()
 	for _, validationErr := range errs.AtLevel(validator.Error) {
@@ -214,20 +217,17 @@ func (pc *DBCommitQueueConnector) FindCommitQueueForProject(name string) (*restM
 	return apiCommitQueue, nil
 }
 
-func (pc *DBCommitQueueConnector) CommitQueueRemoveItem(id, issue, user string) (*restModel.APICommitQueueItem, error) {
-	projectRef, err := model.FindOneProjectRef(id)
+func (pc *DBCommitQueueConnector) CommitQueueRemoveItem(identifier, issue, user string) (*restModel.APICommitQueueItem, error) {
+	id, err := model.GetIdForProject(identifier)
 	if err != nil {
-		return nil, errors.Wrapf(err, "can't find projectRef for '%s'", id)
+		return nil, errors.Wrapf(err, "can't find projectRef for '%s'", identifier)
 	}
-	if projectRef == nil {
-		return nil, errors.Errorf("can't find project ref for '%s'", id)
-	}
-	cq, err := commitqueue.FindOneId(projectRef.Id)
+	cq, err := commitqueue.FindOneId(id)
 	if err != nil {
-		return nil, errors.Wrapf(err, "can't get commit queue for id '%s'", id)
+		return nil, errors.Wrapf(err, "can't get commit queue for project '%s'", identifier)
 	}
 	if cq == nil {
-		return nil, errors.Errorf("no commit queue found for '%s'", id)
+		return nil, errors.Errorf("no commit queue found for '%s'", identifier)
 	}
 	version, err := model.GetVersionForCommitQueueItem(cq, issue)
 	if err != nil {
@@ -291,6 +291,9 @@ func (pc *DBCommitQueueConnector) IsAuthorizedToPatchAndMerge(ctx context.Contex
 	if err != nil {
 		return false, errors.Wrap(err, "call to Github API failed")
 	}
+	if !inOrg {
+		return false, nil
+	}
 
 	// Has repository merge permission
 	// See: https://help.github.com/articles/repository-permission-levels-for-an-organization/
@@ -303,7 +306,7 @@ func (pc *DBCommitQueueConnector) IsAuthorizedToPatchAndMerge(ctx context.Contex
 	mergePermissions := []string{"admin", "write"}
 	hasPermission := utility.StringSliceContains(mergePermissions, permission)
 
-	return inOrg && hasPermission, nil
+	return hasPermission, nil
 }
 
 func (pc *DBCommitQueueConnector) CreatePatchForMerge(ctx context.Context, existingPatchID, commitMessage string) (*restModel.APIPatch, error) {
@@ -315,7 +318,7 @@ func (pc *DBCommitQueueConnector) CreatePatchForMerge(ctx context.Context, exist
 		return nil, errors.Errorf("no patch found for id '%s'", existingPatchID)
 	}
 
-	newPatch, err := model.MakeMergePatchFromExisting(existingPatch, commitMessage)
+	newPatch, err := model.MakeMergePatchFromExisting(ctx, existingPatch, commitMessage)
 	if err != nil {
 		return nil, errors.Wrap(err, "can't create new patch")
 	}
@@ -335,7 +338,7 @@ func (pc *DBCommitQueueConnector) GetMessageForPatch(patchID string) (string, er
 	if requestedPatch == nil {
 		return "", errors.New("no patch found")
 	}
-	project, err := model.FindOneProjectRef(requestedPatch.Project)
+	project, err := model.FindMergedProjectRef(requestedPatch.Project)
 	if err != nil {
 		return "", errors.Wrap(err, "unable to find project for patch")
 	}
@@ -396,14 +399,20 @@ func (pc *DBCommitQueueConnector) ConcludeMerge(patchID, status string) error {
 func (pc *DBCommitQueueConnector) GetAdditionalPatches(patchId string) ([]string, error) {
 	p, err := patch.FindOneId(patchId)
 	if err != nil {
-		return nil, errors.Wrap(err, "unable to find patch")
+		return nil, gimlet.ErrorResponse{
+			StatusCode: http.StatusInternalServerError,
+			Message:    errors.Wrap(err, "unable to find patch").Error(),
+		}
 	}
 	if p == nil {
 		return nil, errors.Errorf("patch '%s' not found", patchId)
 	}
 	cq, err := commitqueue.FindOneId(p.Project)
 	if err != nil {
-		return nil, errors.Wrap(err, "unable to find commit queue")
+		return nil, gimlet.ErrorResponse{
+			StatusCode: http.StatusInternalServerError,
+			Message:    errors.Wrap(err, "unable to find commit queue").Error(),
+		}
 	}
 	if cq == nil {
 		return nil, errors.Errorf("no commit queue for project '%s' found", p.Project)
@@ -420,7 +429,8 @@ func (pc *DBCommitQueueConnector) GetAdditionalPatches(patchId string) ([]string
 }
 
 type MockCommitQueueConnector struct {
-	Queue map[string][]restModel.APICommitQueueItem
+	Queue           map[string][]restModel.APICommitQueueItem
+	UserPermissions map[UserRepoInfo]string // map user to permission level in lieu of the Github API
 }
 
 func (pc *MockCommitQueueConnector) GetGitHubPR(ctx context.Context, owner, repo string, PRNum int) (*github.PullRequest, error) {
@@ -504,8 +514,24 @@ func (pc *MockCommitQueueConnector) CommitQueueClearAll() (int, error) {
 	return count, nil
 }
 
-func (pc *MockCommitQueueConnector) IsAuthorizedToPatchAndMerge(context.Context, *evergreen.Settings, UserRepoInfo) (bool, error) {
-	return true, nil
+func (pc *MockCommitQueueConnector) IsAuthorizedToPatchAndMerge(ctx context.Context, settings *evergreen.Settings, args UserRepoInfo) (bool, error) {
+	_, err := settings.GetGithubOauthToken()
+	if err != nil {
+		return false, errors.Wrap(err, "can't get Github OAuth token from configuration")
+	}
+
+	requiredOrganization := settings.GithubPRCreatorOrg
+	if requiredOrganization == "" {
+		return false, errors.New("no GitHub PR creator organization configured")
+	}
+
+	permission, ok := pc.UserPermissions[args]
+	if !ok {
+		return false, nil
+	}
+	mergePermissions := []string{"admin", "write"}
+	hasPermission := utility.StringSliceContains(mergePermissions, permission)
+	return hasPermission, nil
 }
 
 func (pc *MockCommitQueueConnector) CreatePatchForMerge(ctx context.Context, existingPatchID, commitMessage string) (*restModel.APIPatch, error) {

@@ -62,14 +62,17 @@ var (
 	sshKeyPairEC2RegionsKey = bsonutil.MustHaveTag(SSHKeyPair{}, "EC2Regions")
 
 	// degraded mode flags
+	pluginAdminPageDisabledKey       = bsonutil.MustHaveTag(ServiceFlags{}, "PluginAdminPageDisabled")
 	taskDispatchKey                  = bsonutil.MustHaveTag(ServiceFlags{}, "TaskDispatchDisabled")
 	hostInitKey                      = bsonutil.MustHaveTag(ServiceFlags{}, "HostInitDisabled")
+	podInitDisabledKey               = bsonutil.MustHaveTag(ServiceFlags{}, "PodInitDisabled")
 	s3BinaryDownloadsDisabledKey     = bsonutil.MustHaveTag(ServiceFlags{}, "S3BinaryDownloadsDisabled")
 	monitorKey                       = bsonutil.MustHaveTag(ServiceFlags{}, "MonitorDisabled")
 	alertsKey                        = bsonutil.MustHaveTag(ServiceFlags{}, "AlertsDisabled")
 	agentStartKey                    = bsonutil.MustHaveTag(ServiceFlags{}, "AgentStartDisabled")
 	repotrackerKey                   = bsonutil.MustHaveTag(ServiceFlags{}, "RepotrackerDisabled")
 	schedulerKey                     = bsonutil.MustHaveTag(ServiceFlags{}, "SchedulerDisabled")
+	checkBlockedTasksKey             = bsonutil.MustHaveTag(ServiceFlags{}, "CheckBlockedTasksDisabled")
 	githubPRTestingDisabledKey       = bsonutil.MustHaveTag(ServiceFlags{}, "GithubPRTestingDisabled")
 	cliUpdatesDisabledKey            = bsonutil.MustHaveTag(ServiceFlags{}, "CLIUpdatesDisabled")
 	backgroundStatsDisabledKey       = bsonutil.MustHaveTag(ServiceFlags{}, "BackgroundStatsDisabled")
@@ -89,7 +92,6 @@ var (
 	backgroundReauthDisabledKey      = bsonutil.MustHaveTag(ServiceFlags{}, "BackgroundReauthDisabled")
 	backgroundCleanupDisabledKey     = bsonutil.MustHaveTag(ServiceFlags{}, "BackgroundCleanupDisabled")
 	amboyRemoteManagementDisabledKey = bsonutil.MustHaveTag(ServiceFlags{}, "AmboyRemoteManagementDisabled")
-	amboyRetriesDisabledKey          = bsonutil.MustHaveTag(ServiceFlags{}, "AmboyRetriesDisabled")
 
 	// ContainerPoolsConfig keys
 	poolsKey = bsonutil.MustHaveTag(ContainerPoolsConfig{}, "Pools")
@@ -102,6 +104,8 @@ var (
 	hostInitCloudStatusBatchSizeKey = bsonutil.MustHaveTag(HostInitConfig{}, "CloudStatusBatchSize")
 	hostInitMaxTotalDynamicHostsKey = bsonutil.MustHaveTag(HostInitConfig{}, "MaxTotalDynamicHosts")
 	hostInitS3BaseURLKey            = bsonutil.MustHaveTag(HostInitConfig{}, "S3BaseURL")
+
+	podInitS3BaseURLKey = bsonutil.MustHaveTag(PodInitConfig{}, "S3BaseURL")
 
 	// Spawnhost keys
 	unexpirableHostsPerUserKey   = bsonutil.MustHaveTag(SpawnHostConfig{}, "UnexpirableHostsPerUser")

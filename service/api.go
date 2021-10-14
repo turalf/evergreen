@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -24,7 +26,6 @@ import (
 	"github.com/mongodb/grip/message"
 	"github.com/pkg/errors"
 	"go.mongodb.org/mongo-driver/bson"
-	"gopkg.in/yaml.v2"
 )
 
 const (
@@ -85,12 +86,12 @@ func MustHaveHost(r *http.Request) *host.Host {
 
 // MustHaveProject gets the project from the HTTP request and panics
 // if there is no project specified
-func MustHaveProject(r *http.Request) (*model.ProjectRef, *model.Project) {
-	pref, p := GetProject(r)
-	if pref == nil || p == nil {
+func MustHaveProject(r *http.Request) *model.Project {
+	p := GetProject(r)
+	if p == nil {
 		panic("no project attached to request")
 	}
-	return pref, p
+	return p
 }
 
 // checkTask get the task from the request header and ensures that there is a task. It checks the secret
@@ -129,7 +130,7 @@ func (as *APIServer) checkProject(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		projectRef, err := model.FindOneProjectRef(projectId)
+		projectRef, err := model.FindBranchProjectRef(projectId)
 		if err != nil {
 			as.LoggedError(w, r, http.StatusInternalServerError, err)
 		}
@@ -150,7 +151,6 @@ func (as *APIServer) checkProject(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		r = setProjectRefContext(r, projectRef)
 		r = setProjectContext(r, p)
 
 		next(w, r)
@@ -203,7 +203,7 @@ func (as *APIServer) GetParserProject(w http.ResponseWriter, r *http.Request) {
 	// handle legacy
 	if pp == nil || pp.ConfigUpdateNumber < v.ConfigUpdateNumber {
 		pp = &model.ParserProject{}
-		if err = yaml.Unmarshal([]byte(v.Config), pp); err != nil {
+		if err = util.UnmarshalYAMLWithFallback([]byte(v.Config), pp); err != nil {
 			http.Error(w, "invalid version config", http.StatusNotFound)
 			return
 		}
@@ -223,7 +223,7 @@ func (as *APIServer) GetParserProject(w http.ResponseWriter, r *http.Request) {
 func (as *APIServer) GetProjectRef(w http.ResponseWriter, r *http.Request) {
 	t := MustHaveTask(r)
 
-	p, err := model.FindOneProjectRef(t.Project)
+	p, err := model.FindMergedProjectRef(t.Project)
 	if err != nil {
 		as.LoggedError(w, r, http.StatusInternalServerError, err)
 		return
@@ -341,6 +341,10 @@ func (as *APIServer) FetchExpansionsForTask(w http.ResponseWriter, r *http.Reque
 		as.LoggedError(w, r, http.StatusInternalServerError, err)
 		return
 	}
+	if v == nil {
+		as.LoggedError(w, r, http.StatusNotFound, errors.New("version not found"))
+		return
+	}
 
 	proj, _, err := model.LoadProjectForVersion(v, t.Project, false)
 	if err != nil {
@@ -350,8 +354,6 @@ func (as *APIServer) FetchExpansionsForTask(w http.ResponseWriter, r *http.Reque
 	params := append(proj.GetParameters(), v.Parameters...)
 	for _, param := range params {
 		res.Vars[param.Key] = param.Value
-		// parameters aren't private
-		res.PrivateVars[param.Key] = false
 	}
 
 	gimlet.WriteJSON(w, res)
@@ -488,7 +490,7 @@ func (as *APIServer) Heartbeat(w http.ResponseWriter, r *http.Request) {
 // fetchProjectRef returns a project ref given the project identifier
 func (as *APIServer) fetchProjectRef(w http.ResponseWriter, r *http.Request) {
 	id := gimlet.GetVars(r)["identifier"]
-	projectRef, err := model.FindOneProjectRef(id)
+	projectRef, err := model.FindMergedProjectRef(id)
 	if err != nil {
 		as.LoggedError(w, r, http.StatusInternalServerError, err)
 		return
@@ -511,7 +513,7 @@ func (as *APIServer) listProjects(w http.ResponseWriter, r *http.Request) {
 }
 
 func (as *APIServer) listTasks(w http.ResponseWriter, r *http.Request) {
-	_, project := MustHaveProject(r)
+	project := MustHaveProject(r)
 
 	// zero out the depends on and commands fields because they are
 	// unnecessary and may not get marshaled properly
@@ -523,7 +525,7 @@ func (as *APIServer) listTasks(w http.ResponseWriter, r *http.Request) {
 	gimlet.WriteJSON(w, project.Tasks)
 }
 func (as *APIServer) listVariants(w http.ResponseWriter, r *http.Request) {
-	_, project := MustHaveProject(r)
+	project := MustHaveProject(r)
 
 	gimlet.WriteJSON(w, project.BuildVariants)
 }
@@ -533,24 +535,38 @@ func (as *APIServer) listVariants(w http.ResponseWriter, r *http.Request) {
 func (as *APIServer) validateProjectConfig(w http.ResponseWriter, r *http.Request) {
 	body := util.NewRequestReader(r)
 	defer body.Close()
-	yamlBytes, err := ioutil.ReadAll(body)
+	bytes, err := ioutil.ReadAll(body)
 	if err != nil {
 		gimlet.WriteJSONError(w, fmt.Sprintf("Error reading request body: %v", err))
 		return
 	}
 
+	input := validator.ValidationInput{}
+	if err := json.Unmarshal(bytes, &input); err != nil {
+		// try the legacy structure
+		input.ProjectYaml = bytes
+		input.IncludeLong = true // this is legacy behavior
+	}
+
 	project := &model.Project{}
+	ctx := context.Background()
+	opts := &model.GetProjectOpts{
+		ReadFileFrom: model.ReadFromLocal,
+	}
 	validationErr := validator.ValidationError{}
-	if _, err = model.LoadProjectInto(yamlBytes, "", project); err != nil {
+	if _, err = model.LoadProjectInto(ctx, input.ProjectYaml, opts, "", project); err != nil {
 		validationErr.Message = err.Error()
 		gimlet.WriteJSONError(w, validator.ValidationErrors{validationErr})
 		return
 	}
 
-	errs := validator.CheckYamlStrict(yamlBytes)
-	errs = append(errs, validator.CheckProjectSyntax(project)...)
+	errs := validator.CheckYamlStrict(input.ProjectYaml)
+	errs = append(errs, validator.CheckProjectSyntax(project, input.IncludeLong)...)
 	errs = append(errs, validator.CheckProjectSemantics(project)...)
 	if len(errs) > 0 {
+		if input.Quiet {
+			errs = errs.AtLevel(validator.Error)
+		}
 		gimlet.WriteJSONError(w, errs)
 		return
 	}
@@ -646,7 +662,6 @@ func (as *APIServer) GetServiceApp() *gimlet.APIApp {
 	// legacy routes.
 	app.Route().Version(2).Route("/agent/setup").Wrap(checkHost).Handler(as.agentSetup).Get()
 	app.Route().Version(2).Route("/agent/next_task").Wrap(checkHost).Handler(as.NextTask).Get()
-	app.Route().Version(2).Route("/agent/buildlogger_info").Wrap(checkHost).Handler(as.Cedar).Get()
 	app.Route().Version(2).Route("/agent/cedar_config").Wrap(checkHost).Handler(as.Cedar).Get()
 	app.Route().Version(2).Route("/task/{taskId}/end").Wrap(checkTaskSecret, checkHost).Handler(as.EndTask).Post()
 	app.Route().Version(2).Route("/task/{taskId}/start").Wrap(checkTaskSecret, checkHost).Handler(as.StartTask).Post()
@@ -658,17 +673,17 @@ func (as *APIServer) GetServiceApp() *gimlet.APIApp {
 	app.Route().Version(2).Route("/task/{taskId}/test_logs").Wrap(checkTaskSecret, checkHost).Handler(as.AttachTestLog).Post()
 	app.Route().Version(2).Route("/task/{taskId}/files").Wrap(checkTask, checkHost).Handler(as.AttachFiles).Post()
 	app.Route().Version(2).Route("/task/{taskId}/distro_view").Wrap(checkTask, checkHost).Handler(as.GetDistroView).Get()
-	app.Route().Version(2).Route("/task/{taskId}/downstreamParams").Wrap(checkTask).Handler(as.SetDownstreamParams).Post()
-	app.Route().Version(2).Route("/task/{taskId}/parser_project").Wrap(checkTask).Handler(as.GetParserProject).Get()
-	app.Route().Version(2).Route("/task/{taskId}/project_ref").Wrap(checkTask).Handler(as.GetProjectRef).Get()
+	app.Route().Version(2).Route("/task/{taskId}/parser_project").Wrap(checkTaskSecret).Handler(as.GetParserProject).Get()
+	app.Route().Version(2).Route("/task/{taskId}/project_ref").Wrap(checkTaskSecret).Handler(as.GetProjectRef).Get()
 	app.Route().Version(2).Route("/task/{taskId}/expansions").Wrap(checkTask, checkHost).Handler(as.GetExpansions).Get()
 
 	// plugins
-	app.Route().Version(2).Prefix("/task/{taskId}").Route("/git/patchfile/{patchfile_id}").Wrap(checkTask).Handler(as.gitServePatchFile).Get()
-	app.Route().Version(2).Prefix("/task/{taskId}").Route("/git/patch").Wrap(checkTask).Handler(as.gitServePatch).Get()
+	app.Route().Version(2).Prefix("/task/{taskId}").Route("/git/patchfile/{patchfile_id}").Wrap(checkTaskSecret).Handler(as.gitServePatchFile).Get()
+	app.Route().Version(2).Prefix("/task/{taskId}").Route("/git/patch").Wrap(checkTaskSecret).Handler(as.gitServePatch).Get()
 	app.Route().Version(2).Prefix("/task/{taskId}").Route("/keyval/inc").Wrap(checkTask).Handler(as.keyValPluginInc).Post()
 	app.Route().Version(2).Prefix("/task/{taskId}").Route("/manifest/load").Wrap(checkTask).Handler(as.manifestLoadHandler).Get()
-	app.Route().Version(2).Prefix("/task/{taskId}").Route("/s3Copy/s3Copy").Wrap(checkTask).Handler(as.s3copyPlugin).Post()
+	app.Route().Version(2).Prefix("/task/{taskId}").Route("/s3Copy/s3Copy").Wrap(checkTaskSecret).Handler(as.s3copyPlugin).Post()
+	app.Route().Version(2).Prefix("/task/{taskId}").Route("/downstreamParams").Wrap(checkTask).Handler(as.SetDownstreamParams).Post()
 	app.Route().Version(2).Prefix("/task/{taskId}").Route("/json/tags/{task_name}/{name}").Wrap(checkTask).Handler(as.getTaskJSONTagsForTask).Get()
 	app.Route().Version(2).Prefix("/task/{taskId}").Route("/json/history/{task_name}/{name}").Wrap(checkTask).Handler(as.getTaskJSONTaskHistory).Get()
 	app.Route().Version(2).Prefix("/task/{taskId}").Route("/json/data/{name}").Wrap(checkTask).Handler(as.insertTaskJSON).Post()

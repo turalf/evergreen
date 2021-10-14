@@ -62,9 +62,6 @@ func (s *patchSuite) SetupTest() {
 			PRNumber:  448,
 			HeadHash:  "776f608b5b12cd27b8d931c8ee4ca0c13f857299",
 		},
-		Triggers: patch.TriggerInfo{
-			ChildPatches: []string{childPatchId},
-		},
 	}
 	s.patch.Version = s.patch.Id.Hex()
 	s.NoError(s.patch.Insert())
@@ -73,6 +70,7 @@ func (s *patchSuite) SetupTest() {
 		Id:         mgobson.ObjectIdHex(childPatchId),
 		Project:    "test",
 		Author:     "someone",
+		Status:     evergreen.PatchCreated,
 		StartTime:  startTime,
 		FinishTime: startTime.Add(10 * time.Minute),
 		GithubPatchData: thirdparty.GithubPatch{
@@ -251,22 +249,22 @@ func (s *patchSuite) TestRunChildrenOnPatchOutcome() {
 	n, err := s.t.patchOutcome(&s.subs[0])
 	// there is no token set up in settings, but hitting this error
 	// means it's trying to finalize the patch
-	s.Equal("Failed to finalize child patch: can't get Github OAuth token from configuration: no github token in settings", err.Error())
+	s.Equal("Failed to finalize child patch: can't get Github OAuth token from configuration: no 'github' token in settings", err.Error())
 	s.Nil(n)
 
 	s.data.Status = evergreen.PatchFailed
 	n, err = s.t.patchOutcome(&s.subs[1])
-	s.Equal("Failed to finalize child patch: can't get Github OAuth token from configuration: no github token in settings", err.Error())
+	s.Equal("Failed to finalize child patch: can't get Github OAuth token from configuration: no 'github' token in settings", err.Error())
 	s.Nil(n)
 
 	s.data.Status = evergreen.PatchSucceeded
 	n, err = s.t.patchOutcome(&s.subs[2])
-	s.Equal("Failed to finalize child patch: can't get Github OAuth token from configuration: no github token in settings", err.Error())
+	s.Equal("Failed to finalize child patch: can't get Github OAuth token from configuration: no 'github' token in settings", err.Error())
 	s.Nil(n)
 
 	s.data.Status = evergreen.PatchFailed
 	n, err = s.t.patchOutcome(&s.subs[2])
-	s.Equal("Failed to finalize child patch: can't get Github OAuth token from configuration: no github token in settings", err.Error())
+	s.Equal("Failed to finalize child patch: can't get Github OAuth token from configuration: no 'github' token in settings", err.Error())
 	s.Nil(n)
 
 }

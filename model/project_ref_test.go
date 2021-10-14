@@ -1,19 +1,24 @@
 package model
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/evergreen-ci/evergreen/testutil"
+
 	"github.com/evergreen-ci/evergreen"
 	"github.com/evergreen-ci/evergreen/apimodels"
 	"github.com/evergreen-ci/evergreen/db"
+	"github.com/evergreen-ci/evergreen/model/event"
 	"github.com/evergreen-ci/evergreen/model/patch"
 	"github.com/evergreen-ci/evergreen/model/user"
 	"github.com/evergreen-ci/gimlet"
 	"github.com/evergreen-ci/utility"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/bson"
 	mgobson "gopkg.in/mgo.v2/bson"
 )
 
@@ -32,7 +37,7 @@ func TestFindOneProjectRef(t *testing.T) {
 	}
 	assert.Nil(projectRef.Insert())
 
-	projectRefFromDB, err := FindOneProjectRef("ident")
+	projectRefFromDB, err := FindBranchProjectRef("ident")
 	assert.Nil(err)
 	assert.NotNil(projectRefFromDB)
 
@@ -66,7 +71,7 @@ func TestFindMergedProjectRef(t *testing.T) {
 			{ChildProject: "a different branch"},
 		},
 		CommitQueue:       CommitQueueParams{Enabled: nil, Message: "using repo commit queue"},
-		WorkstationConfig: WorkstationConfig{GitClone: true},
+		WorkstationConfig: WorkstationConfig{GitClone: utility.TruePtr()},
 		TaskSync:          TaskSyncOptions{ConfigEnabled: utility.FalsePtr()},
 	}
 	assert.NoError(t, projectRef.Insert())
@@ -118,7 +123,7 @@ func TestFindMergedProjectRef(t *testing.T) {
 	assert.True(t, mergedProject.CommitQueue.IsEnabled())
 	assert.Equal(t, "using repo commit queue", mergedProject.CommitQueue.Message)
 
-	assert.True(t, mergedProject.WorkstationConfig.GitClone)
+	assert.True(t, mergedProject.WorkstationConfig.ShouldGitClone())
 	assert.Len(t, mergedProject.WorkstationConfig.SetupCommands, 1)
 }
 
@@ -187,7 +192,7 @@ func TestGetActivationTimeForTask(t *testing.T) {
 		BuildVariants: []VersionBuildStatus{
 			{
 				BuildVariant:     "bv1",
-				ActivationStatus: ActivationStatus{Activated: true, ActivateAt: prevTime.Add(-1 * time.Hour)},
+				ActivationStatus: ActivationStatus{Activated: false, ActivateAt: prevTime.Add(-1 * time.Hour)},
 				BatchTimeTasks: []BatchTimeTaskStatus{
 					{
 						TaskName:         "myTask",
@@ -260,6 +265,503 @@ func TestGetActivationTimeWithCron(t *testing.T) {
 		},
 	} {
 		t.Run(name, test)
+	}
+}
+
+func TestChangeOwnerRepo(t *testing.T) {
+	require.NoError(t, db.ClearCollections(ProjectRefCollection, RepoRefCollection, evergreen.ScopeCollection,
+		evergreen.RoleCollection, user.Collection, evergreen.ConfigCollection))
+	env := evergreen.GetEnvironment()
+	_ = env.DB().RunCommand(nil, map[string]string{"create": evergreen.ScopeCollection})
+	settings := testutil.TestConfig()
+	settings.GithubOrgs = []string{"evergreen-ci"}
+	settings.GithubOrgs = []string{"newOwner"}
+	assert.NoError(t, evergreen.UpdateConfig(settings))
+
+	evergreen.SetEnvironment(env)
+	pRef := ProjectRef{
+		Id:              "myProject",
+		Owner:           "evergreen-ci",
+		Repo:            "evergreen",
+		Admins:          []string{"me"},
+		RepoRefId:       "myRepo",
+		UseRepoSettings: true,
+	}
+	assert.NoError(t, pRef.Insert())
+	repoRef := RepoRef{ProjectRef{
+		Id: "myRepo",
+	}}
+	assert.NoError(t, repoRef.Upsert())
+	u := &user.DBUser{Id: "me",
+		SystemRoles: []string{GetViewRepoRole("myRepo")},
+	}
+	assert.NoError(t, u.Insert())
+	pRef.Owner = "newOwner"
+	pRef.Repo = "newRepo"
+	assert.NoError(t, pRef.ChangeOwnerRepo(u))
+
+	pRefFromDB, err := FindBranchProjectRef(pRef.Id)
+	assert.NoError(t, err)
+	assert.NotNil(t, pRefFromDB)
+	assert.NotEqual(t, pRefFromDB.RepoRefId, "myRepo")
+	assert.Equal(t, pRefFromDB.Owner, "newOwner")
+	assert.Equal(t, pRefFromDB.Repo, "newRepo")
+
+	userFromDB, err := user.FindOneById("me")
+	assert.NoError(t, err)
+	assert.Len(t, userFromDB.SystemRoles, 2)
+	assert.Contains(t, userFromDB.SystemRoles, GetRepoAdminRole(pRefFromDB.RepoRefId))
+	assert.Contains(t, userFromDB.SystemRoles, GetViewRepoRole(pRefFromDB.RepoRefId))
+}
+
+func TestAttachToRepo(t *testing.T) {
+	require.NoError(t, db.ClearCollections(ProjectRefCollection, RepoRefCollection, evergreen.ScopeCollection,
+		evergreen.RoleCollection, user.Collection))
+	env := evergreen.GetEnvironment()
+	_ = env.DB().RunCommand(nil, map[string]string{"create": evergreen.ScopeCollection})
+
+	pRef := ProjectRef{
+		Id:     "myProject",
+		Owner:  "evergreen-ci",
+		Repo:   "evergreen",
+		Admins: []string{"me"},
+	}
+	assert.NoError(t, pRef.Insert())
+
+	u := &user.DBUser{Id: "me"}
+	assert.NoError(t, u.Insert())
+	assert.NoError(t, pRef.AttachToRepo(u))
+	assert.True(t, pRef.UseRepoSettings)
+	assert.NotEmpty(t, pRef.RepoRefId)
+
+	pRefFromDB, err := FindBranchProjectRef(pRef.Id)
+	assert.NoError(t, err)
+	assert.NotNil(t, pRefFromDB)
+	assert.True(t, pRefFromDB.UseRepoSettings)
+	assert.NotEmpty(t, pRefFromDB.RepoRefId)
+
+	u, err = user.FindOneById("me")
+	assert.NoError(t, err)
+	assert.NotNil(t, u)
+	assert.Contains(t, u.Roles(), GetViewRepoRole(pRefFromDB.RepoRefId))
+	assert.Contains(t, u.Roles(), GetRepoAdminRole(pRefFromDB.RepoRefId))
+}
+
+func TestDetachFromRepo(t *testing.T) {
+	for name, test := range map[string]func(t *testing.T, pRef *ProjectRef, dbUser *user.DBUser){
+		"project ref is updated correctly": func(t *testing.T, pRef *ProjectRef, dbUser *user.DBUser) {
+			assert.NoError(t, pRef.DetachFromRepo(dbUser))
+
+			pRefFromDB, err := FindBranchProjectRef(pRef.Id)
+			assert.NoError(t, err)
+			assert.NotNil(t, pRefFromDB)
+			assert.False(t, pRefFromDB.UseRepoSettings)
+			assert.Empty(t, pRefFromDB.RepoRefId)
+			assert.NotNil(t, pRefFromDB.PRTestingEnabled)
+			assert.False(t, pRefFromDB.IsPRTestingEnabled())
+			assert.NotNil(t, pRefFromDB.GitTagVersionsEnabled)
+			assert.True(t, pRefFromDB.IsGitTagVersionsEnabled())
+			assert.True(t, pRefFromDB.IsGithubChecksEnabled())
+			assert.Equal(t, pRefFromDB.GithubTriggerAliases, []string{"my_trigger"}) // why isn't this set to repo :O
+
+			dbUser, err = user.FindOneById("me")
+			assert.NoError(t, err)
+			assert.NotNil(t, dbUser)
+			assert.NotContains(t, dbUser.Roles(), GetViewRepoRole(pRefFromDB.RepoRefId))
+		},
+		"project variables are updated": func(t *testing.T, pRef *ProjectRef, dbUser *user.DBUser) {
+			assert.NoError(t, pRef.DetachFromRepo(dbUser))
+
+			vars, err := FindOneProjectVars(pRef.Id)
+			assert.NoError(t, err)
+			assert.NotNil(t, vars)
+			assert.Equal(t, vars.Vars["project"], "only")
+			assert.Equal(t, vars.Vars["in"], "both")    // not modified
+			assert.Equal(t, vars.Vars["repo"], "only!") // added from repo
+			assert.False(t, vars.PrivateVars["project"])
+			assert.True(t, vars.PrivateVars["in"])
+			assert.True(t, vars.PrivateVars["repo"]) // added from repo
+		},
+		"patch aliases": func(t *testing.T, pRef *ProjectRef, dbUser *user.DBUser) {
+			// no patch aliases are copied if the project has a patch alias
+			projectAlias := ProjectAlias{Alias: "myProjectAlias", ProjectID: pRef.Id}
+			assert.NoError(t, projectAlias.Upsert())
+
+			repoAlias := ProjectAlias{Alias: "myRepoAlias", ProjectID: pRef.RepoRefId}
+			assert.NoError(t, repoAlias.Upsert())
+
+			assert.NoError(t, pRef.DetachFromRepo(dbUser))
+			aliases, err := FindAliasesForProject(pRef.Id)
+			assert.NoError(t, err)
+			assert.Len(t, aliases, 1)
+			assert.Equal(t, aliases[0].Alias, projectAlias.Alias)
+
+			// reattach to repo to test without project patch aliases
+			assert.NoError(t, pRef.AttachToRepo(dbUser))
+			assert.NotEmpty(t, pRef.RepoRefId)
+			assert.True(t, pRef.UseRepoSettings)
+			assert.NoError(t, RemoveProjectAlias(projectAlias.ID.Hex()))
+
+			assert.NoError(t, pRef.DetachFromRepo(dbUser))
+			aliases, err = FindAliasesForProject(pRef.Id)
+			assert.NoError(t, err)
+			assert.Len(t, aliases, 1)
+			assert.Equal(t, aliases[0].Alias, repoAlias.Alias)
+
+		},
+		"internal aliases": func(t *testing.T, pRef *ProjectRef, dbUser *user.DBUser) {
+			projectAliases := []ProjectAlias{
+				{Alias: evergreen.GitTagAlias, Variant: "projectVariant"},
+				{Alias: evergreen.CommitQueueAlias},
+			}
+			assert.NoError(t, UpsertAliasesForProject(projectAliases, pRef.Id))
+			repoAliases := []ProjectAlias{
+				{Alias: evergreen.GitTagAlias, Variant: "repoVariant"},
+				{Alias: evergreen.GithubPRAlias},
+			}
+			assert.NoError(t, UpsertAliasesForProject(repoAliases, pRef.RepoRefId))
+
+			assert.NoError(t, pRef.DetachFromRepo(dbUser))
+			aliases, err := FindAliasesForProject(pRef.Id)
+			assert.NoError(t, err)
+			assert.Len(t, aliases, 3)
+			gitTagCount := 0
+			prCount := 0
+			cqCount := 0
+			for _, a := range aliases {
+				if a.Alias == evergreen.GitTagAlias {
+					gitTagCount += 1
+					assert.Equal(t, a.Variant, projectAliases[0].Variant) // wasn't overwritten by repo
+				}
+				if a.Alias == evergreen.GithubPRAlias {
+					prCount += 1
+				}
+				if a.Alias == evergreen.CommitQueueAlias {
+					cqCount += 1
+				}
+			}
+			assert.Equal(t, gitTagCount, 1)
+			assert.Equal(t, prCount, 1)
+			assert.Equal(t, cqCount, 1)
+		},
+		"subscriptions": func(t *testing.T, pRef *ProjectRef, dbUser *user.DBUser) {
+			projectSubscription := event.Subscription{
+				Owner:        pRef.Id,
+				OwnerType:    event.OwnerTypeProject,
+				ResourceType: event.ResourceTypeTask,
+				Trigger:      event.TriggerOutcome,
+				Selectors: []event.Selector{
+					{Type: "id", Data: "1234"},
+				},
+				Subscriber: event.Subscriber{
+					Type:   event.EmailSubscriberType,
+					Target: "a@domain.invalid",
+				},
+			}
+			assert.NoError(t, projectSubscription.Upsert())
+			repoSubscription := event.Subscription{
+				Owner:        pRef.RepoRefId,
+				OwnerType:    event.OwnerTypeProject,
+				ResourceType: event.ResourceTypeTask,
+				Trigger:      event.TriggerFailure,
+				Selectors: []event.Selector{
+					{Type: "id", Data: "1234"},
+				},
+				Subscriber: event.Subscriber{
+					Type:   event.EmailSubscriberType,
+					Target: "a@domain.invalid",
+				},
+			}
+			assert.NoError(t, repoSubscription.Upsert())
+			assert.NoError(t, pRef.DetachFromRepo(dbUser))
+
+			subs, err := event.FindSubscriptionsByOwner(pRef.Id, event.OwnerTypeProject)
+			assert.NoError(t, err)
+			require.Len(t, subs, 1)
+			assert.Equal(t, subs[0].Owner, pRef.Id)
+			assert.Equal(t, subs[0].Trigger, event.TriggerOutcome)
+
+			// reattach to repo to test without subscription
+			assert.NoError(t, pRef.AttachToRepo(dbUser))
+			assert.NoError(t, event.RemoveSubscription(projectSubscription.ID))
+			assert.NoError(t, pRef.DetachFromRepo(dbUser))
+
+			subs, err = event.FindSubscriptionsByOwner(pRef.Id, event.OwnerTypeProject)
+			assert.NoError(t, err)
+			assert.Len(t, subs, 1)
+			assert.Equal(t, subs[0].Owner, pRef.Id)
+			assert.Equal(t, subs[0].Trigger, event.TriggerFailure)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.NoError(t, db.ClearCollections(ProjectRefCollection, RepoRefCollection, evergreen.ScopeCollection,
+				evergreen.RoleCollection, user.Collection, event.SubscriptionsCollection, ProjectAliasCollection))
+			env := evergreen.GetEnvironment()
+			_ = env.DB().RunCommand(nil, map[string]string{"create": evergreen.ScopeCollection})
+
+			pRef := &ProjectRef{
+				Id:              "myProject",
+				Owner:           "evergreen-ci",
+				Repo:            "evergreen",
+				Admins:          []string{"me"},
+				UseRepoSettings: true,
+				RepoRefId:       "myRepo",
+
+				PeriodicBuilds:        []PeriodicBuildDefinition{}, // also shouldn't be overwritten
+				PRTestingEnabled:      utility.FalsePtr(),          // neither of these should be changed when overwriting
+				GitTagVersionsEnabled: utility.TruePtr(),
+				GithubChecksEnabled:   nil, // for now this is defaulting to repo
+				//GithubTriggerAliases:  nil,
+			}
+			assert.NoError(t, pRef.Insert())
+
+			repoRef := RepoRef{ProjectRef{
+				Id:                    pRef.RepoRefId,
+				Owner:                 pRef.Owner,
+				Repo:                  pRef.Repo,
+				PRTestingEnabled:      utility.TruePtr(),
+				GitTagVersionsEnabled: utility.FalsePtr(),
+				GithubChecksEnabled:   utility.TruePtr(),
+				GithubTriggerAliases:  []string{"my_trigger"},
+				PeriodicBuilds: []PeriodicBuildDefinition{
+					{ID: "my_build"},
+				},
+			}}
+			assert.NoError(t, repoRef.Upsert())
+
+			pVars := &ProjectVars{
+				Id: pRef.Id,
+				Vars: map[string]string{
+					"project": "only",
+					"in":      "both",
+				},
+				PrivateVars: map[string]bool{
+					"in": true,
+				},
+			}
+			_, err := pVars.Upsert()
+			assert.NoError(t, err)
+
+			repoVars := &ProjectVars{
+				Id: repoRef.Id,
+				Vars: map[string]string{
+					"in":   "also the repo",
+					"repo": "only!",
+				},
+				PrivateVars: map[string]bool{
+					"repo": true,
+				},
+			}
+			_, err = repoVars.Upsert()
+			assert.NoError(t, err)
+
+			u := &user.DBUser{
+				Id:          "me",
+				SystemRoles: []string{GetViewRepoRole("myRepo")},
+			}
+			assert.NoError(t, u.Insert())
+			test(t, pRef, u)
+		})
+	}
+}
+
+func TestDefaultRepoBySection(t *testing.T) {
+	for name, test := range map[string]func(t *testing.T, id string){
+		ProjectPageGeneralSection: func(t *testing.T, id string) {
+			assert.NoError(t, DefaultSectionToRepo(id, ProjectPageGeneralSection, "me"))
+
+			pRefFromDb, err := FindBranchProjectRef(id)
+			assert.NoError(t, err)
+			assert.NotNil(t, pRefFromDb)
+			assert.Equal(t, pRefFromDb.BatchTime, 0)
+			assert.Nil(t, pRefFromDb.RepotrackerDisabled)
+			assert.Nil(t, pRefFromDb.DeactivatePrevious)
+			assert.Empty(t, pRefFromDb.RemotePath)
+			assert.Nil(t, pRefFromDb.TaskSync.ConfigEnabled)
+			assert.Nil(t, pRefFromDb.FilesIgnoredFromCache)
+		},
+		ProjectPageAccessSection: func(t *testing.T, id string) {
+			assert.NoError(t, DefaultSectionToRepo(id, ProjectPageAccessSection, "me"))
+
+			pRefFromDb, err := FindBranchProjectRef(id)
+			assert.NoError(t, err)
+			assert.NotNil(t, pRefFromDb)
+			assert.Nil(t, pRefFromDb.Private)
+			assert.Nil(t, pRefFromDb.Restricted)
+			assert.Nil(t, pRefFromDb.Admins)
+		},
+		ProjectPageVariablesSection: func(t *testing.T, id string) {
+			assert.NoError(t, DefaultSectionToRepo(id, ProjectPageVariablesSection, "me"))
+
+			varsFromDb, err := FindOneProjectVars(id)
+			assert.NoError(t, err)
+			assert.NotNil(t, varsFromDb)
+			assert.Nil(t, varsFromDb.Vars)
+			assert.Nil(t, varsFromDb.PrivateVars)
+			assert.Nil(t, varsFromDb.RestrictedVars)
+			assert.NotEmpty(t, varsFromDb.Id)
+		},
+		ProjectPageGithubAndCQSection: func(t *testing.T, id string) {
+			aliases, err := FindAliasesForProject(id)
+			assert.NoError(t, err)
+			assert.Len(t, aliases, 5)
+			assert.NoError(t, DefaultSectionToRepo(id, ProjectPageGithubAndCQSection, "me"))
+
+			pRefFromDb, err := FindBranchProjectRef(id)
+			assert.NoError(t, err)
+			assert.NotNil(t, pRefFromDb)
+			assert.Nil(t, pRefFromDb.PRTestingEnabled)
+			assert.Nil(t, pRefFromDb.GithubChecksEnabled)
+			assert.Nil(t, pRefFromDb.GitTagAuthorizedUsers)
+			aliases, err = FindAliasesForProject(id)
+			assert.NoError(t, err)
+			assert.Len(t, aliases, 1)
+			// assert that only patch aliases are left
+			for _, a := range aliases {
+				assert.NotContains(t, evergreen.InternalAliases, a.Alias)
+			}
+		},
+		ProjectPageNotificationsSection: func(t *testing.T, id string) {
+			assert.NoError(t, DefaultSectionToRepo(id, ProjectPageNotificationsSection, "me"))
+			pRefFromDb, err := FindBranchProjectRef(id)
+			assert.NoError(t, err)
+			assert.NotNil(t, pRefFromDb)
+			assert.Nil(t, pRefFromDb.NotifyOnBuildFailure)
+		},
+		ProjectPagePatchAliasSection: func(t *testing.T, id string) {
+			aliases, err := FindAliasesForProject(id)
+			assert.NoError(t, err)
+			assert.Len(t, aliases, 5)
+
+			assert.NoError(t, DefaultSectionToRepo(id, ProjectPagePatchAliasSection, "me"))
+			pRefFromDb, err := FindBranchProjectRef(id)
+			assert.NoError(t, err)
+			assert.NotNil(t, pRefFromDb)
+			assert.Nil(t, pRefFromDb.PatchTriggerAliases)
+
+			aliases, err = FindAliasesForProject(id)
+			assert.NoError(t, err)
+			assert.Len(t, aliases, 4)
+			// assert that no patch aliases are left
+			for _, a := range aliases {
+				assert.Contains(t, evergreen.InternalAliases, a.Alias)
+			}
+		},
+		ProjectPageTriggersSection: func(t *testing.T, id string) {
+			assert.NoError(t, DefaultSectionToRepo(id, ProjectPageTriggersSection, "me"))
+			pRefFromDb, err := FindBranchProjectRef(id)
+			assert.NoError(t, err)
+			assert.NotNil(t, pRefFromDb)
+			assert.Nil(t, pRefFromDb.Triggers)
+		},
+		ProjectPageWorkstationsSection: func(t *testing.T, id string) {
+			assert.NoError(t, DefaultSectionToRepo(id, ProjectPageWorkstationsSection, "me"))
+			pRefFromDb, err := FindBranchProjectRef(id)
+			assert.NoError(t, err)
+			assert.NotNil(t, pRefFromDb)
+			assert.Nil(t, pRefFromDb.WorkstationConfig.GitClone)
+			assert.Nil(t, pRefFromDb.WorkstationConfig.SetupCommands)
+		},
+		ProjectPagePeriodicBuildsSection: func(t *testing.T, id string) {
+			assert.NoError(t, DefaultSectionToRepo(id, ProjectPagePeriodicBuildsSection, "me"))
+			pRefFromDb, err := FindBranchProjectRef(id)
+			assert.NoError(t, err)
+			assert.NotNil(t, pRefFromDb)
+			assert.Nil(t, pRefFromDb.PeriodicBuilds)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.NoError(t, db.ClearCollections(ProjectRefCollection, ProjectVarsCollection, ProjectAliasCollection,
+				event.SubscriptionsCollection, event.AllLogCollection))
+
+			pRef := ProjectRef{
+				Id:                    "my_project",
+				Owner:                 "candy",
+				Repo:                  "land",
+				BatchTime:             10,
+				RepotrackerDisabled:   utility.TruePtr(),
+				DeactivatePrevious:    utility.FalsePtr(),
+				RemotePath:            "path.yml",
+				TaskSync:              TaskSyncOptions{ConfigEnabled: utility.TruePtr()},
+				FilesIgnoredFromCache: []string{},
+				Private:               utility.TruePtr(),
+				Restricted:            utility.FalsePtr(),
+				Admins:                []string{"annie"},
+				PRTestingEnabled:      utility.TruePtr(),
+				GithubChecksEnabled:   utility.FalsePtr(),
+				GitTagAuthorizedUsers: []string{"anna"},
+				NotifyOnBuildFailure:  utility.FalsePtr(),
+				Triggers: []TriggerDefinition{
+					{Project: "your_project"},
+				},
+				PatchTriggerAliases: []patch.PatchTriggerDefinition{
+					{ChildProject: "your_project"},
+				},
+				WorkstationConfig: WorkstationConfig{
+					GitClone: utility.TruePtr(),
+					SetupCommands: []WorkstationSetupCommand{
+						{Command: "expeliarmus"},
+					},
+				},
+				PeriodicBuilds: []PeriodicBuildDefinition{
+					{
+						ID:         "so_occasional",
+						ConfigFile: "build.yml",
+					},
+				},
+			}
+			assert.NoError(t, pRef.Insert())
+
+			pVars := ProjectVars{
+				Id:             pRef.Id,
+				Vars:           map[string]string{"hello": "world"},
+				PrivateVars:    map[string]bool{"hello": true},
+				RestrictedVars: map[string]bool{"hello": true},
+			}
+			assert.NoError(t, pVars.Insert())
+
+			aliases := []ProjectAlias{
+				{
+					ID:        mgobson.NewObjectId(),
+					ProjectID: pRef.Id,
+					Alias:     evergreen.GithubPRAlias,
+					Variant:   "v",
+					Task:      "t",
+				},
+				{
+					ID:        mgobson.NewObjectId(),
+					ProjectID: pRef.Id,
+					Alias:     evergreen.GitTagAlias,
+					Variant:   "v",
+					Task:      "t",
+				},
+				{
+					ID:        mgobson.NewObjectId(),
+					ProjectID: pRef.Id,
+					Alias:     evergreen.CommitQueueAlias,
+					Variant:   "v",
+					Task:      "t",
+				},
+				{
+					ID:        mgobson.NewObjectId(),
+					ProjectID: pRef.Id,
+					Alias:     evergreen.GithubChecksAlias,
+					Variant:   "v",
+					Task:      "t",
+				},
+				{
+					ID:        mgobson.NewObjectId(),
+					ProjectID: pRef.Id,
+					Alias:     "i am a patch alias!",
+					Variant:   "v",
+					Task:      "t",
+				},
+			}
+			for _, a := range aliases {
+				assert.NoError(t, a.Upsert())
+			}
+			test(t, pRef.Id)
+		})
 	}
 }
 
@@ -464,9 +966,14 @@ func TestCreateNewRepoRef(t *testing.T) {
 	}
 	u := user.DBUser{Id: "me"}
 	assert.NoError(t, u.Insert())
-	repoRef, err := doc2.createNewRepoRef(&u)
+	// this will create the new repo ref
+	assert.NoError(t, doc2.AddToRepoScope(&u))
+	assert.NotEmpty(t, doc2.RepoRefId)
+
+	repoRef, err := FindOneRepoRef(doc2.RepoRefId)
 	assert.NoError(t, err)
-	require.NotNil(t, repoRef)
+	assert.NotNil(t, repoRef)
+
 	assert.Equal(t, "mongodb", repoRef.Owner)
 	assert.Equal(t, "mongo", repoRef.Repo)
 	assert.Contains(t, repoRef.Admins, "bob")
@@ -509,6 +1016,15 @@ func TestCreateNewRepoRef(t *testing.T) {
 			assert.Contains(t, a.VariantTags, "v1")
 		}
 	}
+
+	// verify that both the project and repo are part of the scope
+	rm := evergreen.GetEnvironment().RoleManager()
+	scope, err := rm.GetScope(context.TODO(), GetRepoAdminScope(repoRef.Id))
+	assert.NoError(t, err)
+	assert.NotNil(t, scope)
+	assert.Contains(t, scope.Resources, repoRef.Id)
+	assert.Contains(t, scope.Resources, doc2.Id)
+	assert.NotContains(t, scope.Resources, doc1.Id)
 }
 
 func TestFindOneProjectRefByRepoAndBranchWithPRTesting(t *testing.T) {
@@ -1060,6 +1576,47 @@ func TestUpdateAdminRoles(t *testing.T) {
 	assert.Len(t, newAdminFromDB.Roles(), 1)
 }
 
+func TestUpdateAdminRolesError(t *testing.T) {
+	require.NoError(t, db.ClearCollections(ProjectRefCollection, evergreen.ScopeCollection, evergreen.RoleCollection, user.Collection))
+	env := evergreen.GetEnvironment()
+	_ = env.DB().RunCommand(nil, map[string]string{"create": evergreen.ScopeCollection})
+	rm := env.RoleManager()
+	adminScope := gimlet.Scope{
+		ID:        evergreen.AllProjectsScope,
+		Type:      evergreen.ProjectResourceType,
+		Resources: []string{"proj"},
+	}
+	require.NoError(t, rm.AddScope(adminScope))
+	adminRole := gimlet.Role{
+		ID:          "admin",
+		Scope:       evergreen.AllProjectsScope,
+		Permissions: adminPermissions,
+	}
+	require.NoError(t, rm.UpdateRole(adminRole))
+	oldAdmin := user.DBUser{
+		Id:          "oldAdmin",
+		SystemRoles: []string{"admin"},
+	}
+	require.NoError(t, oldAdmin.Insert())
+	newAdmin := user.DBUser{
+		Id: "newAdmin",
+	}
+	require.NoError(t, newAdmin.Insert())
+	p := ProjectRef{
+		Id: "proj",
+	}
+	require.NoError(t, p.Insert())
+
+	// check that the existing users have been added and removed while returning an error
+	assert.Error(t, p.UpdateAdminRoles([]string{"nonexistent-user", newAdmin.Id}, []string{"nonexistent-user", oldAdmin.Id}))
+	oldAdminFromDB, err := user.FindOneById(oldAdmin.Id)
+	assert.NoError(t, err)
+	assert.Len(t, oldAdminFromDB.Roles(), 0)
+	newAdminFromDB, err := user.FindOneById(newAdmin.Id)
+	assert.NoError(t, err)
+	assert.Len(t, newAdminFromDB.Roles(), 1)
+}
+
 func TestUpdateNextPeriodicBuild(t *testing.T) {
 	assert := assert.New(t)
 	assert.NoError(db.Clear(ProjectRefCollection))
@@ -1074,7 +1631,7 @@ func TestUpdateNextPeriodicBuild(t *testing.T) {
 	assert.NoError(p.Insert())
 
 	assert.NoError(p.UpdateNextPeriodicBuild("2", now.Add(10*time.Hour)))
-	dbProject, err := FindOneProjectRef(p.Id)
+	dbProject, err := FindBranchProjectRef(p.Id)
 	assert.NoError(err)
 	assert.True(now.Equal(dbProject.PeriodicBuilds[0].NextRunTime))
 	assert.True(now.Equal(p.PeriodicBuilds[0].NextRunTime))
@@ -1132,6 +1689,69 @@ func TestFindPeriodicProjects(t *testing.T) {
 	assert.Len(t, projects, 2)
 }
 
+func TestRemoveAdminFromProjects(t *testing.T) {
+	assert.NoError(t, db.ClearCollections(ProjectRefCollection, RepoRefCollection))
+
+	pRef := ProjectRef{
+		Id:     "my_project",
+		Admins: []string{"me", "villain"},
+	}
+	pRef2 := ProjectRef{
+		Id:     "your_project",
+		Admins: []string{"you", "villain"},
+	}
+	pRef3 := ProjectRef{
+		Id: "adminless_project",
+	}
+	repoRef := RepoRef{ProjectRef{
+		Id:     "my_repo",
+		Admins: []string{"villain"},
+	}}
+	repoRef2 := RepoRef{ProjectRef{
+		Id:     "your_repo",
+		Admins: []string{"villain"},
+	}}
+	repoRef3 := RepoRef{ProjectRef{
+		Id: "adminless_repo",
+	}}
+
+	assert.NoError(t, pRef.Upsert())
+	assert.NoError(t, pRef2.Upsert())
+	assert.NoError(t, pRef3.Upsert())
+	assert.NoError(t, repoRef.Upsert())
+	assert.NoError(t, repoRef2.Upsert())
+	assert.NoError(t, repoRef3.Upsert())
+
+	assert.NoError(t, RemoveAdminFromProjects("villain"))
+
+	// verify that we carry out multiple updates
+	pRefFromDB, err := FindBranchProjectRef(pRef.Id)
+	assert.NoError(t, err)
+	assert.NotNil(t, pRefFromDB)
+	assert.NotContains(t, pRefFromDB.Admins, "villain")
+	pRefFromDB, err = FindBranchProjectRef(pRef2.Id)
+	assert.NoError(t, err)
+	assert.NotNil(t, pRefFromDB)
+	assert.NotContains(t, pRefFromDB.Admins, "villain")
+	pRefFromDB, err = FindBranchProjectRef(pRef3.Id)
+	assert.NoError(t, err)
+	assert.NotNil(t, pRefFromDB)
+	assert.NotContains(t, pRefFromDB.Admins, "villain")
+
+	repoRefFromDB, err := FindOneRepoRef(repoRef.Id)
+	assert.NoError(t, err)
+	assert.NotNil(t, repoRefFromDB)
+	assert.NotContains(t, repoRefFromDB.Admins, "villain")
+	repoRefFromDB, err = FindOneRepoRef(repoRef2.Id)
+	assert.NoError(t, err)
+	assert.NotNil(t, repoRefFromDB)
+	assert.NotContains(t, repoRefFromDB.Admins, "villain")
+	repoRefFromDB, err = FindOneRepoRef(repoRef3.Id)
+	assert.NoError(t, err)
+	assert.NotNil(t, repoRefFromDB)
+	assert.NotContains(t, repoRefFromDB.Admins, "villain")
+}
+
 func TestPointers(t *testing.T) {
 	assert.NoError(t, db.ClearCollections(ProjectRefCollection))
 	ref := struct {
@@ -1141,7 +1761,7 @@ func TestPointers(t *testing.T) {
 	}{
 		MyString: "this is a string",
 		MyBool:   false,
-		MyStruct: WorkstationConfig{GitClone: true},
+		MyStruct: WorkstationConfig{GitClone: utility.TruePtr()},
 	}
 
 	assert.NoError(t, db.Insert(ProjectRefCollection, ref))
@@ -1151,9 +1771,45 @@ func TestPointers(t *testing.T) {
 		PtrBool   *bool              `bson:"my_bool"`
 		PtrStruct *WorkstationConfig `bson:"config"`
 	}{}
-	assert.NoError(t, db.FindOne(ProjectRefCollection, nil, nil, nil, &pointerRef))
+	assert.NoError(t, db.FindOneQ(ProjectRefCollection, db.Query(bson.M{}), &pointerRef))
 	assert.Equal(t, ref.MyString, *pointerRef.PtrString)
 	assert.False(t, utility.FromBoolTPtr(pointerRef.PtrBool))
 	assert.NotNil(t, pointerRef.PtrStruct)
-	assert.True(t, pointerRef.PtrStruct.GitClone)
+	assert.True(t, pointerRef.PtrStruct.ShouldGitClone())
+}
+
+func TestMergeWithParserProject(t *testing.T) {
+	require.NoError(t, db.ClearCollections(ProjectRefCollection, ParserProjectCollection),
+		"Error clearing collection")
+
+	projectRef := &ProjectRef{
+		Owner:              "mongodb",
+		Id:                 "ident",
+		PerfEnabled:        utility.TruePtr(),
+		DeactivatePrevious: utility.FalsePtr(),
+		TaskAnnotationSettings: evergreen.AnnotationsSettings{
+			FileTicketWebHook: evergreen.WebHook{
+				Endpoint: "random1",
+			},
+		},
+	}
+	parserProject := &ParserProject{
+		Id:                 "version1",
+		DeactivatePrevious: utility.TruePtr(),
+		TaskAnnotationSettings: &evergreen.AnnotationsSettings{
+			FileTicketWebHook: evergreen.WebHook{
+				Endpoint: "random2",
+			},
+		},
+	}
+	assert.NoError(t, projectRef.Insert())
+	assert.NoError(t, parserProject.Insert())
+	err := projectRef.MergeWithParserProject("version1")
+	assert.NoError(t, err)
+	require.NotNil(t, projectRef)
+	assert.Equal(t, "ident", projectRef.Id)
+
+	assert.True(t, *projectRef.DeactivatePrevious)
+	assert.True(t, *projectRef.PerfEnabled)
+	assert.Equal(t, "random2", projectRef.TaskAnnotationSettings.FileTicketWebHook.Endpoint)
 }

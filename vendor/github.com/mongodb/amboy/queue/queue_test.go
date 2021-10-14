@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/evergreen-ci/utility"
 	"github.com/google/uuid"
 	"github.com/mongodb/amboy"
 	"github.com/mongodb/amboy/job"
@@ -44,21 +45,22 @@ func newDriverID() string { return strings.Replace(uuid.New().String(), "-", "."
 type TestCloser func(context.Context) error
 
 type QueueTestCase struct {
-	Name                    string
-	Constructor             func(context.Context, string, int) (amboy.Queue, TestCloser, error)
-	MinSize                 int
-	MaxSize                 int
-	SingleWorker            bool
-	MultiSupported          bool
-	OrderedSupported        bool
-	OrderedStartsBefore     bool
-	WaitUntilSupported      bool
-	DispatchBeforeSupported bool
-	MaxTimeSupported        bool
-	ScopesSupported         bool
-	SkipUnordered           bool
-	IsRemote                bool
-	Skip                    bool
+	Name                string
+	Constructor         func(context.Context, string, int) (amboy.Queue, TestCloser, error)
+	MinSize             int
+	MaxSize             int
+	SingleWorker        bool
+	MultiSupported      bool
+	OrderedSupported    bool
+	OrderedStartsBefore bool
+	WaitUntilSupported  bool
+	DispatchBySupported bool
+	MaxTimeSupported    bool
+	ScopesSupported     bool
+	RetrySupported      bool
+	SkipUnordered       bool
+	IsRemote            bool
+	Skip                bool
 }
 
 type PoolTestCase struct {
@@ -79,15 +81,15 @@ type SizeTestCase struct {
 func DefaultQueueTestCases() []QueueTestCase {
 	return []QueueTestCase{
 		{
-			Name:                    "AdaptiveOrdering",
-			OrderedSupported:        true,
-			OrderedStartsBefore:     true,
-			WaitUntilSupported:      true,
-			SingleWorker:            true,
-			DispatchBeforeSupported: true,
-			MaxTimeSupported:        true,
-			MinSize:                 2,
-			MaxSize:                 16,
+			Name:                "AdaptiveOrdering",
+			OrderedSupported:    true,
+			OrderedStartsBefore: true,
+			WaitUntilSupported:  true,
+			SingleWorker:        true,
+			DispatchBySupported: true,
+			MaxTimeSupported:    true,
+			MinSize:             2,
+			MaxSize:             16,
 			Constructor: func(ctx context.Context, _ string, size int) (amboy.Queue, TestCloser, error) {
 				return NewAdaptiveOrderedLocalQueue(size, defaultLocalQueueCapcity), func(ctx context.Context) error { return nil }, nil
 			},
@@ -111,13 +113,25 @@ func DefaultQueueTestCases() []QueueTestCase {
 			},
 		},
 		{
-			Name:                    "LimitedSize",
-			WaitUntilSupported:      true,
-			DispatchBeforeSupported: true,
-			MaxTimeSupported:        true,
-			ScopesSupported:         true,
+			Name:                "LimitedSize",
+			WaitUntilSupported:  true,
+			DispatchBySupported: true,
+			MaxTimeSupported:    true,
+			ScopesSupported:     true,
 			Constructor: func(ctx context.Context, _ string, size int) (amboy.Queue, TestCloser, error) {
 				return NewLocalLimitedSize(size, 1024*size), func(ctx context.Context) error { return nil }, nil
+			},
+		},
+		{
+			Name:                "LimitedSizeSerializable",
+			WaitUntilSupported:  true,
+			DispatchBySupported: true,
+			MaxTimeSupported:    true,
+			ScopesSupported:     true,
+			RetrySupported:      true,
+			Constructor: func(ctx context.Context, _ string, size int) (amboy.Queue, TestCloser, error) {
+				q, err := NewLocalLimitedSizeSerializable(size, 1024*size)
+				return q, func(ctx context.Context) error { return nil }, err
 			},
 		},
 		{
@@ -126,7 +140,7 @@ func DefaultQueueTestCases() []QueueTestCase {
 			MaxTimeSupported: true,
 			ScopesSupported:  true,
 			Constructor: func(ctx context.Context, _ string, size int) (amboy.Queue, TestCloser, error) {
-				return NewShuffledLocal(size, defaultLocalQueueCapcity), func(ctx context.Context) error { return nil }, nil
+				return NewLocalShuffled(size, defaultLocalQueueCapcity), func(ctx context.Context) error { return nil }, nil
 			},
 		},
 		{
@@ -167,12 +181,13 @@ func MongoDBQueueTestCases(client *mongo.Client) []QueueTestCase {
 			WaitUntilSupported: true,
 			MaxTimeSupported:   true,
 			ScopesSupported:    true,
+			RetrySupported:     true,
 			Constructor: func(ctx context.Context, name string, size int) (amboy.Queue, TestCloser, error) {
 				opts := MongoDBQueueCreationOptions{
 					Size:    size,
 					Name:    name,
 					Ordered: false,
-					MDB:     DefaultMongoDBOptions(),
+					MDB:     defaultMongoDBTestOptions(),
 					Client:  client,
 				}
 				opts.MDB.Format = amboy.BSON2
@@ -186,12 +201,15 @@ func MongoDBQueueTestCases(client *mongo.Client) []QueueTestCase {
 				}
 
 				closer := func(ctx context.Context) error {
+					catcher := grip.NewBasicCatcher()
 					d := rq.Driver()
 					if d != nil {
-						d.Close()
+						catcher.Add(d.Close(ctx))
 					}
 
-					return client.Database(opts.MDB.DB).Collection(addJobsSuffix(name)).Drop(ctx)
+					catcher.Add(client.Database(opts.MDB.DB).Collection(addJobsSuffix(name)).Drop(ctx))
+
+					return catcher.Resolve()
 				}
 
 				return q, closer, nil
@@ -203,12 +221,13 @@ func MongoDBQueueTestCases(client *mongo.Client) []QueueTestCase {
 			WaitUntilSupported: true,
 			MaxTimeSupported:   true,
 			ScopesSupported:    true,
+			RetrySupported:     true,
 			Constructor: func(ctx context.Context, name string, size int) (amboy.Queue, TestCloser, error) {
 				opts := MongoDBQueueCreationOptions{
 					Size:    size,
 					Name:    name,
 					Ordered: false,
-					MDB:     DefaultMongoDBOptions(),
+					MDB:     defaultMongoDBTestOptions(),
 					Client:  client,
 				}
 				opts.MDB.Format = amboy.BSON2
@@ -224,12 +243,16 @@ func MongoDBQueueTestCases(client *mongo.Client) []QueueTestCase {
 				}
 
 				closer := func(ctx context.Context) error {
+					catcher := grip.NewBasicCatcher()
+
 					d := rq.Driver()
 					if d != nil {
-						d.Close()
+						catcher.Add(d.Close(ctx))
 					}
 
-					return client.Database(opts.MDB.DB).Collection(addGroupSuffix(name)).Drop(ctx)
+					catcher.Add(client.Database(opts.MDB.DB).Collection(addGroupSuffix(name)).Drop(ctx))
+
+					return catcher.Resolve()
 				}
 
 				return q, closer, nil
@@ -241,13 +264,14 @@ func MongoDBQueueTestCases(client *mongo.Client) []QueueTestCase {
 			WaitUntilSupported: true,
 			MaxTimeSupported:   true,
 			ScopesSupported:    true,
+			RetrySupported:     true,
 			MaxSize:            32,
 			Constructor: func(ctx context.Context, name string, size int) (amboy.Queue, TestCloser, error) {
 				opts := MongoDBQueueCreationOptions{
 					Size:    size,
 					Name:    name,
 					Ordered: false,
-					MDB:     DefaultMongoDBOptions(),
+					MDB:     defaultMongoDBTestOptions(),
 					Client:  client,
 				}
 				opts.MDB.Format = amboy.BSON
@@ -261,12 +285,15 @@ func MongoDBQueueTestCases(client *mongo.Client) []QueueTestCase {
 				}
 
 				closer := func(ctx context.Context) error {
+					catcher := grip.NewBasicCatcher()
 					d := rq.Driver()
 					if d != nil {
-						d.Close()
+						catcher.Add(d.Close(ctx))
 					}
 
-					return client.Database(opts.MDB.DB).Collection(addJobsSuffix(name)).Drop(ctx)
+					catcher.Add(client.Database(opts.MDB.DB).Collection(addJobsSuffix(name)).Drop(ctx))
+
+					return catcher.Resolve()
 				}
 
 				return q, closer, nil
@@ -277,6 +304,7 @@ func MongoDBQueueTestCases(client *mongo.Client) []QueueTestCase {
 			IsRemote:           true,
 			WaitUntilSupported: true,
 			MaxTimeSupported:   true,
+			RetrySupported:     true,
 			ScopesSupported:    true,
 			OrderedSupported:   true,
 			Constructor: func(ctx context.Context, name string, size int) (amboy.Queue, TestCloser, error) {
@@ -284,7 +312,7 @@ func MongoDBQueueTestCases(client *mongo.Client) []QueueTestCase {
 					Size:    size,
 					Name:    name,
 					Ordered: true,
-					MDB:     DefaultMongoDBOptions(),
+					MDB:     defaultMongoDBTestOptions(),
 					Client:  client,
 				}
 				opts.MDB.Format = amboy.BSON2
@@ -298,12 +326,15 @@ func MongoDBQueueTestCases(client *mongo.Client) []QueueTestCase {
 				}
 
 				closer := func(ctx context.Context) error {
+					catcher := grip.NewBasicCatcher()
 					d := rq.Driver()
 					if d != nil {
-						d.Close()
+						catcher.Add(d.Close(ctx))
 					}
 
-					return client.Database(opts.MDB.DB).Collection(addJobsSuffix(name)).Drop(ctx)
+					catcher.Add(client.Database(opts.MDB.DB).Collection(addJobsSuffix(name)).Drop(ctx))
+
+					return catcher.Resolve()
 				}
 
 				return q, closer, nil
@@ -405,6 +436,15 @@ func TestQueueSmoke(t *testing.T) {
 				}
 
 				t.Run(runner.Name+"Pool", func(t *testing.T) {
+					var (
+						testRetryOnce                sync.Once
+						testWaitUntilOnce            sync.Once
+						testDispatchByOnce           sync.Once
+						testMaxTimeOnce              sync.Once
+						testScopesOnce               sync.Once
+						testApplyScopesOnEnqueueOnce sync.Once
+					)
+
 					for _, size := range DefaultSizeTestCases() {
 						if test.MaxSize > 0 && size.Size > test.MaxSize {
 							continue
@@ -434,19 +474,33 @@ func TestQueueSmoke(t *testing.T) {
 								})
 							}
 							if test.WaitUntilSupported {
-								t.Run("WaitUntil", func(t *testing.T) {
-									WaitUntilTest(bctx, t, test, runner, size)
+								testWaitUntilOnce.Do(func() {
+									t.Run("WaitUntil", func(t *testing.T) {
+										WaitUntilTest(bctx, t, test, runner, size)
+									})
 								})
 							}
 
-							if test.DispatchBeforeSupported {
-								t.Run("DispatchBefore", func(t *testing.T) {
-									DispatchBeforeTest(bctx, t, test, runner, size)
+							if test.DispatchBySupported {
+								testDispatchByOnce.Do(func() {
+									t.Run("DispatchBy", func(t *testing.T) {
+										DispatchByTest(bctx, t, test, runner, size)
+									})
 								})
 							}
 							if test.MaxTimeSupported {
-								t.Run("MaxTime", func(t *testing.T) {
-									MaxTimeTest(bctx, t, test, runner, size)
+								testMaxTimeOnce.Do(func() {
+									t.Run("MaxTime", func(t *testing.T) {
+										MaxTimeTest(bctx, t, test, runner, size)
+									})
+								})
+							}
+
+							if test.RetrySupported && size.Size >= 2 {
+								testRetryOnce.Do(func() {
+									t.Run("Retry", func(t *testing.T) {
+										RetryableTest(bctx, t, test, runner, size)
+									})
 								})
 							}
 
@@ -455,14 +509,18 @@ func TestQueueSmoke(t *testing.T) {
 							})
 
 							if test.ScopesSupported {
-								if test.SingleWorker && (!test.OrderedSupported || test.OrderedStartsBefore) && size.Size >= 4 && size.Size <= 32 {
-									t.Run("ScopedLock", func(t *testing.T) {
-										ScopedLockTest(bctx, t, test, runner, size)
+								if test.SingleWorker && (!test.OrderedSupported || test.OrderedStartsBefore) && size.Size >= 4 {
+									testScopesOnce.Do(func() {
+										t.Run("ScopedLock", func(t *testing.T) {
+											ScopedLockTest(bctx, t, test, runner, size)
+										})
 									})
 								}
-								if size.Size <= 4 {
-									t.Run("ApplyScopesOnEnqueue", func(t *testing.T) {
-										ApplyScopesOnEnqueueTest(bctx, t, test, runner, size)
+								if size.Size >= 2 {
+									testApplyScopesOnEnqueueOnce.Do(func() {
+										t.Run("ApplyScopesOnEnqueue", func(t *testing.T) {
+											ApplyScopesOnEnqueueTest(bctx, t, test, runner, size)
+										})
 									})
 								}
 							}
@@ -523,7 +581,7 @@ func TestQueueSmoke(t *testing.T) {
 								require.True(t, ok)
 
 								require.NoError(t, j.Error())
-								q.Complete(ctx, j)
+								require.NoError(t, q.Complete(ctx, j))
 								require.NoError(t, j.Error())
 							})
 						})
@@ -591,11 +649,11 @@ func UnorderedTest(bctx context.Context, t *testing.T, test QueueTestCase, runne
 	}
 
 	statCounter := 0
-	for stat := range q.JobStats(ctx) {
+	for info := range q.JobInfo(ctx) {
 		statCounter++
-		assert.True(t, stat.ID != "")
+		assert.NotEmpty(t, info.ID)
 	}
-	assert.Equal(t, numJobs, statCounter, fmt.Sprintf("want jobStats for every job"))
+	assert.Equal(t, numJobs, statCounter, fmt.Sprintf("want job info for every job"))
 
 	grip.Infof("completed results check for %d worker smoke test", size.Size)
 }
@@ -649,9 +707,9 @@ func OrderedTest(bctx context.Context, t *testing.T, test QueueTestCase, runner 
 	}
 
 	statCounter := 0
-	for stat := range q.JobStats(ctx) {
+	for info := range q.JobInfo(ctx) {
 		statCounter++
-		require.True(t, stat.ID != "")
+		require.NotEmpty(t, info.ID)
 	}
 	require.Equal(t, statCounter, numJobs)
 }
@@ -753,7 +811,7 @@ waitLoop:
 	assert.Equal(t, numJobs, completed)
 }
 
-func DispatchBeforeTest(bctx context.Context, t *testing.T, test QueueTestCase, runner PoolTestCase, size SizeTestCase) {
+func DispatchByTest(bctx context.Context, t *testing.T, test QueueTestCase, runner PoolTestCase, size SizeTestCase) {
 	ctx, cancel := context.WithTimeout(bctx, 2*time.Minute)
 	defer cancel()
 
@@ -1101,4 +1159,141 @@ func ApplyScopesOnEnqueueTest(bctx context.Context, t *testing.T, test QueueTest
 			testCase(ctx, t, q)
 		})
 	}
+}
+
+func RetryableTest(bctx context.Context, t *testing.T, test QueueTestCase, runner PoolTestCase, size SizeTestCase) {
+	for testName, testCase := range map[string]func(ctx context.Context, t *testing.T, rh amboy.RetryHandler, rq amboy.RetryableQueue){
+		"JobRetriesOnce": func(ctx context.Context, t *testing.T, rh amboy.RetryHandler, rq amboy.RetryableQueue) {
+			j := newMockRetryableJob("id")
+			j.NumTimesToRetry = 1
+
+			require.NoError(t, rq.Put(ctx, j))
+			require.True(t, amboy.WaitInterval(ctx, rq, 100*time.Millisecond))
+
+			jobReenqueued := make(chan struct{})
+			go func() {
+				defer close(jobReenqueued)
+				for {
+					if ctx.Err() != nil {
+						return
+					}
+					if rq.Stats(ctx).IsComplete() {
+						return
+					}
+				}
+			}()
+			select {
+			case <-ctx.Done():
+				require.FailNow(t, ctx.Err().Error())
+			case <-jobReenqueued:
+				assert.True(t, rq.Stats(ctx).Total > 1)
+				require.True(t, amboy.WaitInterval(ctx, rq, 100*time.Millisecond))
+				var foundFirstAttempt, foundSecondAttempt bool
+				for completed := range rq.Results(ctx) {
+					assert.False(t, completed.RetryInfo().ShouldRetry())
+					if completed.RetryInfo().CurrentAttempt == 0 {
+						foundFirstAttempt = true
+					}
+					if completed.RetryInfo().CurrentAttempt == 1 {
+						foundSecondAttempt = true
+					}
+				}
+				assert.True(t, foundFirstAttempt, "first job attempt should have completed")
+				assert.True(t, foundSecondAttempt, "second job attempt should have completed")
+			}
+		},
+		"ScopedJobRetriesOnceThenAllowsLaterJobToTakeScope": func(ctx context.Context, t *testing.T, rh amboy.RetryHandler, rq amboy.RetryableQueue) {
+			j := newMockRetryableJob("id")
+			j.NumTimesToRetry = 1
+			j.SetShouldApplyScopesOnEnqueue(true)
+			scopes := []string{"scope"}
+			j.SetScopes(scopes)
+
+			require.NoError(t, rq.Put(ctx, j))
+
+			jobAfterRetry := newMockRetryableJob("id1")
+			jobAfterRetry.SetScopes(scopes)
+			require.True(t, amboy.WaitInterval(ctx, rq, 100*time.Millisecond))
+
+			require.NoError(t, rq.Put(ctx, jobAfterRetry))
+			require.True(t, amboy.WaitInterval(ctx, rq, 100*time.Millisecond))
+
+			assert.Equal(t, 3, rq.Stats(ctx).Completed)
+			var foundFirstAttempt, foundSecondAttempt bool
+			for completed := range rq.Results(ctx) {
+				assert.False(t, completed.RetryInfo().ShouldRetry())
+				if completed.RetryInfo().CurrentAttempt == 0 {
+					foundFirstAttempt = true
+				}
+				if completed.RetryInfo().CurrentAttempt == 1 {
+					foundSecondAttempt = true
+				}
+			}
+			assert.True(t, foundFirstAttempt, "first job attempt should have completed")
+			assert.True(t, foundSecondAttempt, "second job attempt should have completed")
+		},
+		"StaleRetryingJobsAreDetectedAndRetried": func(ctx context.Context, t *testing.T, rh amboy.RetryHandler, rq amboy.RetryableQueue) {
+			j := newMockRetryableJob("id")
+			j.SetStatus(amboy.JobStatusInfo{
+				Completed:        true,
+				ModificationTime: time.Now().Add(-100 * rq.Info().LockTimeout),
+			})
+			j.UpdateRetryInfo(amboy.JobRetryOptions{
+				NeedsRetry: utility.TruePtr(),
+			})
+
+			require.NoError(t, rq.Put(ctx, j))
+			jobsDone := make(chan struct{})
+			go func() {
+				defer close(jobsDone)
+				for {
+					if ctx.Err() != nil {
+						return
+					}
+					if rq.Stats(ctx).IsComplete() {
+						return
+					}
+				}
+			}()
+
+			select {
+			case <-ctx.Done():
+				require.FailNow(t, "context was done before stale retrying job could be handled")
+			case <-jobsDone:
+				assert.Equal(t, 2, rq.Stats(ctx).Total)
+				assert.Equal(t, 2, rq.Stats(ctx).Completed)
+
+				rj0, err := rq.GetAttempt(ctx, j.ID(), 0)
+				require.NoError(t, err)
+				assert.True(t, rj0.RetryInfo().Retryable)
+				assert.False(t, rj0.RetryInfo().NeedsRetry)
+
+				rj1, err := rq.GetAttempt(ctx, j.ID(), 1)
+				require.NoError(t, err)
+				assert.True(t, rj1.RetryInfo().Retryable)
+				assert.False(t, rj1.RetryInfo().NeedsRetry)
+			}
+		},
+	} {
+		t.Run(testName, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(bctx, time.Minute)
+			defer cancel()
+
+			q, closer, err := test.Constructor(ctx, newDriverID(), size.Size)
+			require.NoError(t, err)
+			defer func() {
+				assert.NoError(t, closer(ctx))
+			}()
+
+			rq, ok := q.(amboy.RetryableQueue)
+			require.True(t, ok, "queue is not retryable")
+
+			require.NoError(t, runner.SetPool(rq, size.Size))
+
+			require.NoError(t, rq.Start(ctx))
+
+			testCase(ctx, t, rq.RetryHandler(), rq)
+		})
+	}
+
 }

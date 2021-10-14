@@ -32,6 +32,7 @@ func NewConfigModel() *APIAdminSettings {
 		NewRelic:          &APINewRelicConfig{},
 		Notify:            &APINotifyConfig{},
 		Plugins:           map[string]map[string]interface{}{},
+		PodInit:           &APIPodInitConfig{},
 		Providers:         &APICloudProviders{},
 		RepoTracker:       &APIRepoTrackerConfig{},
 		Scheduler:         &APISchedulerConfig{},
@@ -74,6 +75,7 @@ type APIAdminSettings struct {
 	NewRelic            *APINewRelicConfig                `json:"newrelic,omitempty"`
 	Notify              *APINotifyConfig                  `json:"notify,omitempty"`
 	Plugins             map[string]map[string]interface{} `json:"plugins,omitempty"`
+	PodInit             *APIPodInitConfig                 `json:"pod_init,omitempty"`
 	PprofPort           *string                           `json:"pprof_port,omitempty"`
 	Providers           *APICloudProviders                `json:"providers,omitempty"`
 	RepoTracker         *APIRepoTrackerConfig             `json:"repotracker,omitempty"`
@@ -346,6 +348,7 @@ type APIAmboyConfig struct {
 	GroupTTLMinutes                       int                 `json:"group_ttl"`
 	RequireRemotePriority                 bool                `json:"require_remote_priority"`
 	LockTimeoutMinutes                    int                 `json:"lock_timeout_minutes"`
+	SampleSize                            int                 `json:"sample_size"`
 	Retry                                 APIAmboyRetryConfig `json:"retry,omitempty"`
 }
 
@@ -364,6 +367,7 @@ func (a *APIAmboyConfig) BuildFromService(h interface{}) error {
 		a.GroupTTLMinutes = v.GroupTTLMinutes
 		a.RequireRemotePriority = v.RequireRemotePriority
 		a.LockTimeoutMinutes = v.LockTimeoutMinutes
+		a.SampleSize = v.SampleSize
 		if err := a.Retry.BuildFromService(v.Retry); err != nil {
 			return errors.Wrap(err, "building Amboy retry settings from service")
 		}
@@ -395,6 +399,7 @@ func (a *APIAmboyConfig) ToService() (interface{}, error) {
 		GroupTTLMinutes:                       a.GroupTTLMinutes,
 		RequireRemotePriority:                 a.RequireRemotePriority,
 		LockTimeoutMinutes:                    a.LockTimeoutMinutes,
+		SampleSize:                            a.SampleSize,
 		Retry:                                 retry,
 	}, nil
 }
@@ -585,11 +590,10 @@ func (a *APIAuthConfig) ToService() (interface{}, error) {
 }
 
 type APICedarConfig struct {
-	BaseURL  *string `json:"base_url"`
-	RPCPort  *string `json:"rpc_port"`
-	User     *string `json:"user"`
-	Password *string `json:"password"`
-	APIKey   *string `json:"api_key"`
+	BaseURL *string `json:"base_url"`
+	RPCPort *string `json:"rpc_port"`
+	User    *string `json:"user"`
+	APIKey  *string `json:"api_key"`
 }
 
 func (a *APICedarConfig) BuildFromService(h interface{}) error {
@@ -598,7 +602,6 @@ func (a *APICedarConfig) BuildFromService(h interface{}) error {
 		a.BaseURL = utility.ToStringPtr(v.BaseURL)
 		a.RPCPort = utility.ToStringPtr(v.RPCPort)
 		a.User = utility.ToStringPtr(v.User)
-		a.Password = utility.ToStringPtr(v.Password)
 		a.APIKey = utility.ToStringPtr(v.APIKey)
 	default:
 		return errors.Errorf("%T is not a supported type", h)
@@ -608,11 +611,10 @@ func (a *APICedarConfig) BuildFromService(h interface{}) error {
 
 func (a *APICedarConfig) ToService() (interface{}, error) {
 	return evergreen.CedarConfig{
-		BaseURL:  utility.FromStringPtr(a.BaseURL),
-		RPCPort:  utility.FromStringPtr(a.RPCPort),
-		User:     utility.FromStringPtr(a.User),
-		Password: utility.FromStringPtr(a.Password),
-		APIKey:   utility.FromStringPtr(a.APIKey),
+		BaseURL: utility.FromStringPtr(a.BaseURL),
+		RPCPort: utility.FromStringPtr(a.RPCPort),
+		User:    utility.FromStringPtr(a.User),
+		APIKey:  utility.FromStringPtr(a.APIKey),
 	}, nil
 }
 
@@ -664,11 +666,12 @@ func (a *APILDAPConfig) ToService() (interface{}, error) {
 }
 
 type APIOktaConfig struct {
-	ClientID           *string `json:"client_id"`
-	ClientSecret       *string `json:"client_secret"`
-	Issuer             *string `json:"issuer"`
-	UserGroup          *string `json:"user_group"`
-	ExpireAfterMinutes int     `json:"expire_after_minutes"`
+	ClientID           *string  `json:"client_id"`
+	ClientSecret       *string  `json:"client_secret"`
+	Issuer             *string  `json:"issuer"`
+	Scopes             []string `json:"scopes"`
+	UserGroup          *string  `json:"user_group"`
+	ExpireAfterMinutes int      `json:"expire_after_minutes"`
 }
 
 func (a *APIOktaConfig) BuildFromService(h interface{}) error {
@@ -680,6 +683,7 @@ func (a *APIOktaConfig) BuildFromService(h interface{}) error {
 		a.ClientID = utility.ToStringPtr(v.ClientID)
 		a.ClientSecret = utility.ToStringPtr(v.ClientSecret)
 		a.Issuer = utility.ToStringPtr(v.Issuer)
+		a.Scopes = v.Scopes
 		a.UserGroup = utility.ToStringPtr(v.UserGroup)
 		a.ExpireAfterMinutes = v.ExpireAfterMinutes
 		return nil
@@ -696,6 +700,7 @@ func (a *APIOktaConfig) ToService() (interface{}, error) {
 		ClientID:           utility.FromStringPtr(a.ClientID),
 		ClientSecret:       utility.FromStringPtr(a.ClientSecret),
 		Issuer:             utility.FromStringPtr(a.Issuer),
+		Scopes:             a.Scopes,
 		UserGroup:          utility.FromStringPtr(a.UserGroup),
 		ExpireAfterMinutes: a.ExpireAfterMinutes,
 	}, nil
@@ -879,6 +884,26 @@ func (a *APIHostInitConfig) ToService() (interface{}, error) {
 		CloudStatusBatchSize: a.CloudStatusBatchSize,
 		MaxTotalDynamicHosts: a.MaxTotalDynamicHosts,
 		S3BaseURL:            utility.FromStringPtr(a.S3BaseURL),
+	}, nil
+}
+
+type APIPodInitConfig struct {
+	S3BaseURL *string `json:"s3_base_url"`
+}
+
+func (a *APIPodInitConfig) BuildFromService(h interface{}) error {
+	switch v := h.(type) {
+	case evergreen.PodInitConfig:
+		a.S3BaseURL = utility.ToStringPtr(v.S3BaseURL)
+	default:
+		return errors.Errorf("%T is not a supported type", h)
+	}
+	return nil
+}
+
+func (a *APIPodInitConfig) ToService() (interface{}, error) {
+	return evergreen.PodInitConfig{
+		S3BaseURL: utility.FromStringPtr(a.S3BaseURL),
 	}, nil
 }
 
@@ -1334,35 +1359,7 @@ type APIAWSConfig struct {
 	AllowedInstanceTypes []*string         `json:"allowed_instance_types"`
 	AllowedRegions       []*string         `json:"allowed_regions"`
 	MaxVolumeSizePerUser *int              `json:"max_volume_size"`
-}
-
-type APIS3Credentials struct {
-	Key    *string `json:"key"`
-	Secret *string `json:"secret"`
-	Bucket *string `json:"bucket"`
-}
-
-func (a *APIS3Credentials) BuildFromService(h interface{}) error {
-	switch v := h.(type) {
-	case evergreen.S3Credentials:
-		a.Key = utility.ToStringPtr(v.Key)
-		a.Secret = utility.ToStringPtr(v.Secret)
-		a.Bucket = utility.ToStringPtr(v.Bucket)
-		return nil
-	default:
-		return errors.Errorf("%T is not a supported type", h)
-	}
-}
-
-func (a *APIS3Credentials) ToService() (interface{}, error) {
-	if a == nil {
-		return nil, nil
-	}
-	return evergreen.S3Credentials{
-		Key:    utility.FromStringPtr(a.Key),
-		Secret: utility.FromStringPtr(a.Secret),
-		Bucket: utility.FromStringPtr(a.Bucket),
-	}, nil
+	Pod                  *APIAWSPodConfig  `json:"pod"`
 }
 
 func (a *APIAWSConfig) BuildFromService(h interface{}) error {
@@ -1386,19 +1383,19 @@ func (a *APIAWSConfig) BuildFromService(h interface{}) error {
 
 		s3Creds := &APIS3Credentials{}
 		if err := s3Creds.BuildFromService(v.S3); err != nil {
-			return errors.Wrap(err, "could not convert API S3 credentials to service")
+			return errors.Wrap(err, "converting S3 credentials from service")
 		}
 		a.S3 = s3Creds
 
 		taskSync := &APIS3Credentials{}
 		if err := taskSync.BuildFromService(v.TaskSync); err != nil {
-			return errors.Wrap(err, "could not convert API S3 credentials to service")
+			return errors.Wrap(err, "converting S3 credentials from service")
 		}
 		a.TaskSync = taskSync
 
 		taskSyncRead := &APIS3Credentials{}
 		if err := taskSyncRead.BuildFromService(v.TaskSyncRead); err != nil {
-			return errors.Wrap(err, "could not convert API S3 credentials to service")
+			return errors.Wrap(err, "converting S3 credentials from service")
 		}
 		a.TaskSyncRead = taskSyncRead
 
@@ -1407,6 +1404,9 @@ func (a *APIAWSConfig) BuildFromService(h interface{}) error {
 		a.AllowedInstanceTypes = utility.ToStringPtrSlice(v.AllowedInstanceTypes)
 		a.AllowedRegions = utility.ToStringPtrSlice(v.AllowedRegions)
 
+		var pod APIAWSPodConfig
+		pod.BuildFromService(v.Pod)
+		a.Pod = &pod
 	default:
 		return errors.Errorf("%T is not a supported type", h)
 	}
@@ -1496,7 +1496,194 @@ func (a *APIAWSConfig) ToService() (interface{}, error) {
 	config.AllowedInstanceTypes = utility.FromStringPtrSlice(a.AllowedInstanceTypes)
 	config.AllowedRegions = utility.FromStringPtrSlice(a.AllowedRegions)
 
+	pod, err := a.Pod.ToService()
+	if err != nil {
+		return nil, errors.Wrap(err, "could not convert ECS configuration to service")
+	}
+	config.Pod = *pod
+
 	return config, nil
+}
+
+type APIS3Credentials struct {
+	Key    *string `json:"key"`
+	Secret *string `json:"secret"`
+	Bucket *string `json:"bucket"`
+}
+
+func (a *APIS3Credentials) BuildFromService(h interface{}) error {
+	switch v := h.(type) {
+	case evergreen.S3Credentials:
+		a.Key = utility.ToStringPtr(v.Key)
+		a.Secret = utility.ToStringPtr(v.Secret)
+		a.Bucket = utility.ToStringPtr(v.Bucket)
+		return nil
+	default:
+		return errors.Errorf("%T is not a supported type", h)
+	}
+}
+
+func (a *APIS3Credentials) ToService() (interface{}, error) {
+	if a == nil {
+		return nil, nil
+	}
+	return evergreen.S3Credentials{
+		Key:    utility.FromStringPtr(a.Key),
+		Secret: utility.FromStringPtr(a.Secret),
+		Bucket: utility.FromStringPtr(a.Bucket),
+	}, nil
+}
+
+// APIAWSPodConfig represents configuration options for pods running in AWS.
+type APIAWSPodConfig struct {
+	Role           *string                  `json:"role"`
+	Region         *string                  `json:"region"`
+	ECS            *APIECSConfig            `json:"ecs"`
+	SecretsManager *APISecretsManagerConfig `json:"secrets_manager"`
+}
+
+func (a *APIAWSPodConfig) BuildFromService(conf evergreen.AWSPodConfig) {
+	a.Role = utility.ToStringPtr(conf.Role)
+	a.Region = utility.ToStringPtr(conf.Region)
+	var apiECS APIECSConfig
+	apiECS.BuildFromService(conf.ECS)
+	a.ECS = &apiECS
+	var apiSecretsManager APISecretsManagerConfig
+	apiSecretsManager.BuildFromService(conf.SecretsManager)
+	a.SecretsManager = &apiSecretsManager
+}
+
+func (a *APIAWSPodConfig) ToService() (*evergreen.AWSPodConfig, error) {
+	if a == nil {
+		return nil, nil
+	}
+
+	ecs, err := a.ECS.ToService()
+	if err != nil {
+		return nil, errors.Wrap(err, "building ECS config")
+	}
+
+	sm := a.SecretsManager.ToService()
+
+	return &evergreen.AWSPodConfig{
+		Role:           utility.FromStringPtr(a.Role),
+		Region:         utility.FromStringPtr(a.Region),
+		ECS:            *ecs,
+		SecretsManager: sm,
+	}, nil
+}
+
+// APIECSConfig represents configuration options for AWS ECS.
+type APIECSConfig struct {
+	TaskDefinitionPrefix *string               `json:"task_definition_prefix"`
+	TaskRole             *string               `json:"task_role"`
+	ExecutionRole        *string               `json:"execution_role"`
+	AWSVPC               *APIAWSVPCConfig      `json:"awsvpc"`
+	Clusters             []APIECSClusterConfig `json:"clusters"`
+}
+
+func (a *APIECSConfig) BuildFromService(conf evergreen.ECSConfig) {
+	a.TaskDefinitionPrefix = utility.ToStringPtr(conf.TaskDefinitionPrefix)
+	a.TaskRole = utility.ToStringPtr(conf.TaskRole)
+	a.ExecutionRole = utility.ToStringPtr(conf.ExecutionRole)
+	var apiAWSVPC APIAWSVPCConfig
+	apiAWSVPC.BuildFromService(conf.AWSVPC)
+	a.AWSVPC = &apiAWSVPC
+	for _, cluster := range conf.Clusters {
+		var apiCluster APIECSClusterConfig
+		apiCluster.BuildFromService(cluster)
+		a.Clusters = append(a.Clusters, apiCluster)
+	}
+}
+
+func (a *APIECSConfig) ToService() (*evergreen.ECSConfig, error) {
+	if a == nil {
+		return nil, nil
+	}
+
+	var clusters []evergreen.ECSClusterConfig
+	for _, apiCluster := range a.Clusters {
+		cluster, err := apiCluster.ToService()
+		if err != nil {
+			return nil, errors.Wrap(err, "building ECS cluster config")
+		}
+		clusters = append(clusters, *cluster)
+	}
+
+	return &evergreen.ECSConfig{
+		TaskDefinitionPrefix: utility.FromStringPtr(a.TaskDefinitionPrefix),
+		TaskRole:             utility.FromStringPtr(a.TaskRole),
+		ExecutionRole:        utility.FromStringPtr(a.ExecutionRole),
+		AWSVPC:               a.AWSVPC.ToService(),
+		Clusters:             clusters,
+	}, nil
+}
+
+// APIAWSVPCConfig represents configuration options for tasks in ECS using
+// AWSVPC networking.
+type APIAWSVPCConfig struct {
+	Subnets        []string `json:"subnets,omitempty"`
+	SecurityGroups []string `json:"security_groups,omitempty"`
+}
+
+func (a *APIAWSVPCConfig) BuildFromService(conf evergreen.AWSVPCConfig) {
+	a.Subnets = conf.Subnets
+	a.SecurityGroups = conf.SecurityGroups
+}
+
+func (a *APIAWSVPCConfig) ToService() evergreen.AWSVPCConfig {
+	if a == nil {
+		return evergreen.AWSVPCConfig{}
+	}
+	return evergreen.AWSVPCConfig{
+		Subnets:        a.Subnets,
+		SecurityGroups: a.SecurityGroups,
+	}
+}
+
+// APIECSClusterConfig represents configuration options for a cluster in AWS
+// ECS.
+type APIECSClusterConfig struct {
+	Name     *string `json:"name"`
+	Platform *string `json:"platform"`
+}
+
+func (a *APIECSClusterConfig) BuildFromService(conf evergreen.ECSClusterConfig) {
+	a.Name = utility.ToStringPtr(conf.Name)
+	a.Platform = utility.ToStringPtr(string(conf.Platform))
+}
+
+func (a *APIECSClusterConfig) ToService() (*evergreen.ECSClusterConfig, error) {
+	if a == nil {
+		return nil, nil
+	}
+	p := evergreen.ECSClusterPlatform(utility.FromStringPtr(a.Platform))
+	if err := p.Validate(); err != nil {
+		return nil, errors.Wrap(err, "invalid platform")
+	}
+	return &evergreen.ECSClusterConfig{
+		Name:     utility.FromStringPtr(a.Name),
+		Platform: p,
+	}, nil
+}
+
+// APISecretsManagerConfig represents configuration options for AWS Secrets
+// Manager.
+type APISecretsManagerConfig struct {
+	SecretPrefix *string `json:"secret_prefix"`
+}
+
+func (a *APISecretsManagerConfig) BuildFromService(conf evergreen.SecretsManagerConfig) {
+	a.SecretPrefix = utility.ToStringPtr(conf.SecretPrefix)
+}
+
+func (a *APISecretsManagerConfig) ToService() evergreen.SecretsManagerConfig {
+	if a == nil {
+		return evergreen.SecretsManagerConfig{}
+	}
+	return evergreen.SecretsManagerConfig{
+		SecretPrefix: utility.FromStringPtr(a.SecretPrefix),
+	}
 }
 
 type APIDockerConfig struct {
@@ -1649,6 +1836,7 @@ type APISchedulerConfig struct {
 	HostAllocator                 *string `json:"host_allocator"`
 	HostAllocatorRoundingRule     *string `json:"host_allocator_rounding_rule"`
 	HostAllocatorFeedbackRule     *string `json:"host_allocator_feedback_rule"`
+	HostsOverallocatedRule        *string `json:"hosts_overallocated_rule"`
 	FutureHostFraction            float64 `json:"free_host_fraction"`
 	CacheDurationSeconds          int     `json:"cache_duration_seconds"`
 	Planner                       *string `json:"planner"`
@@ -1661,6 +1849,7 @@ type APISchedulerConfig struct {
 	MainlineTimeInQueueFactor     int64   `json:"mainline_time_in_queue_factor"`
 	ExpectedRuntimeFactor         int64   `json:"expected_runtime_factor"`
 	GenerateTaskFactor            int64   `json:"generate_task_factor"`
+	StepbackTaskFactor            int64   `json:"stepback_task_factor"`
 }
 
 func (a *APISchedulerConfig) BuildFromService(h interface{}) error {
@@ -1669,6 +1858,7 @@ func (a *APISchedulerConfig) BuildFromService(h interface{}) error {
 		a.TaskFinder = utility.ToStringPtr(v.TaskFinder)
 		a.HostAllocator = utility.ToStringPtr(v.HostAllocator)
 		a.HostAllocatorFeedbackRule = utility.ToStringPtr(v.HostAllocatorFeedbackRule)
+		a.HostsOverallocatedRule = utility.ToStringPtr(v.HostsOverallocatedRule)
 		a.FutureHostFraction = v.FutureHostFraction
 		a.CacheDurationSeconds = v.CacheDurationSeconds
 		a.Planner = utility.ToStringPtr(v.Planner)
@@ -1681,6 +1871,7 @@ func (a *APISchedulerConfig) BuildFromService(h interface{}) error {
 		a.MainlineTimeInQueueFactor = v.MainlineTimeInQueueFactor
 		a.ExpectedRuntimeFactor = v.ExpectedRuntimeFactor
 		a.GenerateTaskFactor = v.GenerateTaskFactor
+		a.StepbackTaskFactor = v.StepbackTaskFactor
 	default:
 		return errors.Errorf("%T is not a supported type", h)
 	}
@@ -1692,6 +1883,7 @@ func (a *APISchedulerConfig) ToService() (interface{}, error) {
 		TaskFinder:                    utility.FromStringPtr(a.TaskFinder),
 		HostAllocator:                 utility.FromStringPtr(a.HostAllocator),
 		HostAllocatorFeedbackRule:     utility.FromStringPtr(a.HostAllocatorFeedbackRule),
+		HostsOverallocatedRule:        utility.FromStringPtr(a.HostsOverallocatedRule),
 		FutureHostFraction:            a.FutureHostFraction,
 		CacheDurationSeconds:          a.CacheDurationSeconds,
 		Planner:                       utility.FromStringPtr(a.Planner),
@@ -1704,19 +1896,23 @@ func (a *APISchedulerConfig) ToService() (interface{}, error) {
 		CommitQueueFactor:             a.CommitQueueFactor,
 		MainlineTimeInQueueFactor:     a.MainlineTimeInQueueFactor,
 		GenerateTaskFactor:            a.GenerateTaskFactor,
+		StepbackTaskFactor:            a.StepbackTaskFactor,
 	}, nil
 }
 
 // APIServiceFlags is a public structure representing the admin service flags
 type APIServiceFlags struct {
+	PluginAdminPageDisabled       bool `json:"plugin_admin_page_disabled"`
 	TaskDispatchDisabled          bool `json:"task_dispatch_disabled"`
 	HostInitDisabled              bool `json:"host_init_disabled"`
+	PodInitDisabled               bool `json:"pod_init_disabled"`
 	S3BinaryDownloadsDisabled     bool `json:"s3_binary_downloads_disabled"`
 	MonitorDisabled               bool `json:"monitor_disabled"`
 	AlertsDisabled                bool `json:"alerts_disabled"`
 	AgentStartDisabled            bool `json:"agent_start_disabled"`
 	RepotrackerDisabled           bool `json:"repotracker_disabled"`
 	SchedulerDisabled             bool `json:"scheduler_disabled"`
+	CheckBlockedTasksDisabled     bool `json:"check_blocked_tasks_disabled"`
 	GithubPRTestingDisabled       bool `json:"github_pr_testing_disabled"`
 	CLIUpdatesDisabled            bool `json:"cli_updates_disabled"`
 	BackgroundStatsDisabled       bool `json:"background_stats_disabled"`
@@ -1730,7 +1926,6 @@ type APIServiceFlags struct {
 	BackgroundReauthDisabled      bool `json:"background_reauth_disabled"`
 	BackgroundCleanupDisabled     bool `json:"background_cleanup_disabled"`
 	AmboyRemoteManagementDisabled bool `json:"amboy_remote_management_disabled"`
-	AmboyRetriesDisabled          bool `json:"amboy_retries_disabled"`
 
 	// Notifications Flags
 	EventProcessingDisabled      bool `json:"event_processing_disabled"`
@@ -1857,18 +2052,17 @@ func (a *APISplunkConnectionInfo) ToService() (interface{}, error) {
 }
 
 type APIUIConfig struct {
-	Url                     *string  `json:"url"`
-	HelpUrl                 *string  `json:"help_url"`
-	UIv2Url                 *string  `json:"uiv2_url"`
-	HttpListenAddr          *string  `json:"http_listen_addr"`
-	Secret                  *string  `json:"secret"`
-	DefaultProject          *string  `json:"default_project"`
-	CacheTemplates          bool     `json:"cache_templates"`
-	CsrfKey                 *string  `json:"csrf_key"`
-	CORSOrigins             []string `json:"cors_origins"`
-	LoginDomain             *string  `json:"login_domain"`
-	ExpireLoginCookieDomain *string  `json:"expire_domain"`
-	UserVoice               *string  `json:"userVoice"`
+	Url            *string  `json:"url"`
+	HelpUrl        *string  `json:"help_url"`
+	UIv2Url        *string  `json:"uiv2_url"`
+	HttpListenAddr *string  `json:"http_listen_addr"`
+	Secret         *string  `json:"secret"`
+	DefaultProject *string  `json:"default_project"`
+	CacheTemplates bool     `json:"cache_templates"`
+	CsrfKey        *string  `json:"csrf_key"`
+	CORSOrigins    []string `json:"cors_origins"`
+	LoginDomain    *string  `json:"login_domain"`
+	UserVoice      *string  `json:"userVoice"`
 }
 
 func (a *APIUIConfig) BuildFromService(h interface{}) error {
@@ -1884,7 +2078,6 @@ func (a *APIUIConfig) BuildFromService(h interface{}) error {
 		a.CsrfKey = utility.ToStringPtr(v.CsrfKey)
 		a.CORSOrigins = v.CORSOrigins
 		a.LoginDomain = utility.ToStringPtr(v.LoginDomain)
-		a.ExpireLoginCookieDomain = utility.ToStringPtr(v.ExpireLoginCookieDomain)
 		a.UserVoice = utility.ToStringPtr(v.UserVoice)
 	default:
 		return errors.Errorf("%T is not a supported type", h)
@@ -1894,18 +2087,17 @@ func (a *APIUIConfig) BuildFromService(h interface{}) error {
 
 func (a *APIUIConfig) ToService() (interface{}, error) {
 	return evergreen.UIConfig{
-		Url:                     utility.FromStringPtr(a.Url),
-		HelpUrl:                 utility.FromStringPtr(a.HelpUrl),
-		UIv2Url:                 utility.FromStringPtr(a.UIv2Url),
-		HttpListenAddr:          utility.FromStringPtr(a.HttpListenAddr),
-		Secret:                  utility.FromStringPtr(a.Secret),
-		DefaultProject:          utility.FromStringPtr(a.DefaultProject),
-		CacheTemplates:          a.CacheTemplates,
-		CsrfKey:                 utility.FromStringPtr(a.CsrfKey),
-		CORSOrigins:             a.CORSOrigins,
-		LoginDomain:             utility.FromStringPtr(a.LoginDomain),
-		ExpireLoginCookieDomain: utility.FromStringPtr(a.ExpireLoginCookieDomain),
-		UserVoice:               utility.FromStringPtr(a.UserVoice),
+		Url:            utility.FromStringPtr(a.Url),
+		HelpUrl:        utility.FromStringPtr(a.HelpUrl),
+		UIv2Url:        utility.FromStringPtr(a.UIv2Url),
+		HttpListenAddr: utility.FromStringPtr(a.HttpListenAddr),
+		Secret:         utility.FromStringPtr(a.Secret),
+		DefaultProject: utility.FromStringPtr(a.DefaultProject),
+		CacheTemplates: a.CacheTemplates,
+		CsrfKey:        utility.FromStringPtr(a.CsrfKey),
+		CORSOrigins:    a.CORSOrigins,
+		LoginDomain:    utility.FromStringPtr(a.LoginDomain),
+		UserVoice:      utility.FromStringPtr(a.UserVoice),
 	}, nil
 }
 
@@ -1970,14 +2162,17 @@ func (ab *APIBanner) ToService() (interface{}, error) {
 func (as *APIServiceFlags) BuildFromService(h interface{}) error {
 	switch v := h.(type) {
 	case evergreen.ServiceFlags:
+		as.PluginAdminPageDisabled = v.PluginAdminPageDisabled
 		as.TaskDispatchDisabled = v.TaskDispatchDisabled
 		as.HostInitDisabled = v.HostInitDisabled
+		as.PodInitDisabled = v.PodInitDisabled
 		as.S3BinaryDownloadsDisabled = v.S3BinaryDownloadsDisabled
 		as.MonitorDisabled = v.MonitorDisabled
 		as.AlertsDisabled = v.AlertsDisabled
 		as.AgentStartDisabled = v.AgentStartDisabled
 		as.RepotrackerDisabled = v.RepotrackerDisabled
 		as.SchedulerDisabled = v.SchedulerDisabled
+		as.CheckBlockedTasksDisabled = v.CheckBlockedTasksDisabled
 		as.GithubPRTestingDisabled = v.GithubPRTestingDisabled
 		as.CLIUpdatesDisabled = v.CLIUpdatesDisabled
 		as.EventProcessingDisabled = v.EventProcessingDisabled
@@ -1997,7 +2192,6 @@ func (as *APIServiceFlags) BuildFromService(h interface{}) error {
 		as.BackgroundCleanupDisabled = v.BackgroundCleanupDisabled
 		as.BackgroundReauthDisabled = v.BackgroundReauthDisabled
 		as.AmboyRemoteManagementDisabled = v.AmboyRemoteManagementDisabled
-		as.AmboyRetriesDisabled = v.AmboyRetriesDisabled
 	default:
 		return errors.Errorf("%T is not a supported service flags type", h)
 	}
@@ -2007,14 +2201,17 @@ func (as *APIServiceFlags) BuildFromService(h interface{}) error {
 // ToService returns a service model from an API model
 func (as *APIServiceFlags) ToService() (interface{}, error) {
 	return evergreen.ServiceFlags{
+		PluginAdminPageDisabled:       as.PluginAdminPageDisabled,
 		TaskDispatchDisabled:          as.TaskDispatchDisabled,
 		HostInitDisabled:              as.HostInitDisabled,
+		PodInitDisabled:               as.PodInitDisabled,
 		S3BinaryDownloadsDisabled:     as.S3BinaryDownloadsDisabled,
 		MonitorDisabled:               as.MonitorDisabled,
 		AlertsDisabled:                as.AlertsDisabled,
 		AgentStartDisabled:            as.AgentStartDisabled,
 		RepotrackerDisabled:           as.RepotrackerDisabled,
 		SchedulerDisabled:             as.SchedulerDisabled,
+		CheckBlockedTasksDisabled:     as.CheckBlockedTasksDisabled,
 		GithubPRTestingDisabled:       as.GithubPRTestingDisabled,
 		CLIUpdatesDisabled:            as.CLIUpdatesDisabled,
 		EventProcessingDisabled:       as.EventProcessingDisabled,
@@ -2034,7 +2231,6 @@ func (as *APIServiceFlags) ToService() (interface{}, error) {
 		BackgroundCleanupDisabled:     as.BackgroundCleanupDisabled,
 		BackgroundReauthDisabled:      as.BackgroundReauthDisabled,
 		AmboyRemoteManagementDisabled: as.AmboyRemoteManagementDisabled,
-		AmboyRetriesDisabled:          as.AmboyRetriesDisabled,
 	}, nil
 }
 

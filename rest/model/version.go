@@ -17,6 +17,7 @@ type APIVersion struct {
 	Revision           *string        `json:"revision"`
 	Order              int            `json:"order"`
 	Project            *string        `json:"project"`
+	ProjectIdentifier  *string        `json:"project_identifier"`
 	Author             *string        `json:"author"`
 	AuthorEmail        *string        `json:"author_email"`
 	Message            *string        `json:"message"`
@@ -28,6 +29,7 @@ type APIVersion struct {
 	Builds             []APIBuild     `json:"builds,omitempty"`
 	Requester          *string        `json:"requester"`
 	Errors             []*string      `json:"errors"`
+	Activated          *bool          `json:"activated"`
 }
 
 type buildDetail struct {
@@ -57,6 +59,7 @@ func (apiVersion *APIVersion) BuildFromService(h interface{}) error {
 	apiVersion.Project = utility.ToStringPtr(v.Identifier)
 	apiVersion.Requester = utility.ToStringPtr(v.Requester)
 	apiVersion.Errors = utility.ToStringPtrSlice(v.Errors)
+	apiVersion.Activated = v.Activated
 
 	var bd buildDetail
 	for _, t := range v.BuildVariants {
@@ -79,6 +82,12 @@ func (apiVersion *APIVersion) BuildFromService(h interface{}) error {
 			Key:   utility.ToStringPtr(param.Key),
 			Value: utility.ToStringPtr(param.Value),
 		})
+	}
+	if v.Identifier != "" {
+		identifier, err := model.GetIdentifierForProject(v.Identifier)
+		if err == nil {
+			apiVersion.ProjectIdentifier = utility.ToStringPtr(identifier)
+		}
 	}
 	return nil
 }

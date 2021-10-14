@@ -52,7 +52,7 @@ func (h *GithubHook) Remove() error {
 
 func FindGithubHook(owner, repo string) (*GithubHook, error) {
 	if len(owner) == 0 || len(repo) == 0 {
-		return nil, errors.New("Owner and repository must not be empty strings")
+		return nil, nil
 	}
 
 	hook := &GithubHook{}
@@ -112,9 +112,7 @@ func SetupNewGithubHook(ctx context.Context, settings evergreen.Settings, owner 
 	newCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	resp := &github.Response{}
-	respHook := &github.Hook{}
-	respHook, resp, err = client.Repositories.CreateHook(newCtx, owner, repo, &hookObj)
+	respHook, resp, err := client.Repositories.CreateHook(newCtx, owner, repo, &hookObj)
 	if err != nil {
 		return nil, err
 	}

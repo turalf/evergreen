@@ -41,6 +41,7 @@ func (as *APIServer) submitPatch(w http.ResponseWriter, r *http.Request) {
 
 	data := struct {
 		Description       string             `json:"desc"`
+		Path              string             `json:"path"`
 		Project           string             `json:"project"`
 		BackportInfo      patch.BackportInfo `json:"backport_info"`
 		GitMetadata       *patch.GitMetadata `json:"git_metadata"`
@@ -111,6 +112,7 @@ func (as *APIServer) submitPatch(w http.ResponseWriter, r *http.Request) {
 	intent, err := patch.NewCliIntent(patch.CLIIntentParams{
 		User:            dbUser.Id,
 		Project:         pref.Id,
+		Path:            data.Path,
 		BaseGitHash:     data.Githash,
 		Module:          r.FormValue("module"),
 		PatchContent:    patchString,
@@ -234,7 +236,7 @@ func (as *APIServer) updatePatchModule(w http.ResponseWriter, r *http.Request) {
 
 	moduleName, githash := data.Module, data.Githash
 
-	projectRef, err := model.FindOneProjectRef(p.Project)
+	projectRef, err := model.FindBranchProjectRef(p.Project)
 	if err != nil {
 		as.LoggedError(w, r, http.StatusInternalServerError, errors.Wrapf(err, "Error getting project ref with id %v", p.Project))
 		return
@@ -437,7 +439,7 @@ func (as *APIServer) summarizePatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (as *APIServer) listPatchModules(w http.ResponseWriter, r *http.Request) {
-	_, project := MustHaveProject(r)
+	project := MustHaveProject(r)
 
 	p, err := getPatchFromRequest(r)
 	if err != nil {
