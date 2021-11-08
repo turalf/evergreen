@@ -869,15 +869,24 @@ type BuildVariantTuple struct {
 	DisplayName  string `bson:"display_name"`
 }
 
-// FindUniqueBuildVariantNamesByTask returns a list of unique build variants names and their display names for a given task name,
-// it tries to return the most recent display name for each build variant to avoid duplicates from display names changing
-func FindUniqueBuildVariantNamesByTask(projectId string, taskName string) ([]*BuildVariantTuple, error) {
+const VersionLimit = 50
+
+// FindUniqueBuildVariantNamesByTask returns a list of unique build variants names and their display names for a given task name.
+// It attempts to return the most recent display name for each build variant to avoid returning duplicates caused by display names changing.
+// It only checks the last 50 versions that ran for a given task name.
+func FindUniqueBuildVariantNamesByTask(projectId string, taskName string, repoOrderNumber int) ([]*BuildVariantTuple, error) {
 	pipeline := []bson.M{
 		{"$match": bson.M{
 			ProjectKey:     projectId,
 			DisplayNameKey: taskName,
-			RequesterKey:   bson.M{"$in": evergreen.SystemVersionRequesterTypes}},
-		}}
+			RequesterKey:   bson.M{"$in": evergreen.SystemVersionRequesterTypes},
+			"$and": []bson.M{
+				{RevisionOrderNumberKey: bson.M{"$gte": repoOrderNumber - VersionLimit}},
+				{RevisionOrderNumberKey: bson.M{"$lte": repoOrderNumber}},
+			},
+		},
+		},
+	}
 
 	// sort by most recent version to get the most recent display names for the build variants first
 	sortByOrderNumber := bson.M{
@@ -944,13 +953,23 @@ func FindUniqueBuildVariantNamesByTask(projectId string, taskName string) ([]*Bu
 }
 
 // FindTaskNamesByBuildVariant returns a list of unique task names for a given build variant
-func FindTaskNamesByBuildVariant(projectId string, buildVariant string) ([]string, error) {
+func FindTaskNamesByBuildVariant(projectId string, buildVariant string, repoOrderNumber int) ([]string, error) {
 	pipeline := []bson.M{
 		{"$match": bson.M{
 			ProjectKey:      projectId,
 			BuildVariantKey: buildVariant,
-			RequesterKey:    bson.M{"$in": evergreen.SystemVersionRequesterTypes}},
-		}}
+			RequesterKey:    bson.M{"$in": evergreen.SystemVersionRequesterTypes},
+			"$or": []bson.M{
+				{DisplayTaskIdKey: bson.M{"$exists": false}},
+				{DisplayTaskIdKey: ""},
+			},
+			"$and": []bson.M{
+				{RevisionOrderNumberKey: bson.M{"$gt": repoOrderNumber - VersionLimit}},
+				{RevisionOrderNumberKey: bson.M{"$lte": repoOrderNumber}},
+			},
+		},
+		},
+	}
 
 	group := bson.M{
 		"$group": bson.M{
@@ -1207,6 +1226,13 @@ func FindAllTasksFromVersionWithDependencies(versionId string) ([]Task, error) {
 func FindTasksFromVersions(versionIds []string) ([]Task, error) {
 	return Find(ByVersions(versionIds).
 		WithFields(IdKey, DisplayNameKey, StatusKey, TimeTakenKey, VersionKey, BuildVariantKey, AbortedKey, AbortInfoKey))
+}
+
+func CountActivatedTasksForVersion(versionId string) (int, error) {
+	return Count(db.Query(bson.M{
+		VersionKey:   versionId,
+		ActivatedKey: true,
+	}))
 }
 
 func FindTaskGroupFromBuild(buildId, taskGroup string) ([]Task, error) {

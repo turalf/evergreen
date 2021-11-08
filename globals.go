@@ -137,6 +137,9 @@ const (
 
 	DisabledTaskPriority = int64(-1)
 
+	// if a patch has NumTasksForLargePatch number of tasks or greater, we log to splunk for investigation
+	NumTasksForLargePatch = 10000
+
 	// LogMessage struct versions
 	LogmessageFormatTimestamp = 1
 	LogmessageCurrentVersion  = LogmessageFormatTimestamp
@@ -255,6 +258,8 @@ const (
 
 	SaveGenerateTasksError     = "error saving config in `generate.tasks`"
 	TasksAlreadyGeneratedError = "generator already ran and generated tasks"
+	KeyTooLargeToIndexError    = "key too large to index"
+	InvalidDivideInputError    = "$divide only supports numeric types"
 )
 
 var InternalAliases []string = []string{
