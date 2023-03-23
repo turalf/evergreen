@@ -218,6 +218,29 @@ tasks:
       - command: timeout.update
         params:
           timeout_secs: 2700
+      - command: subprocess.exec
+        params:
+          working_dir: macnotary
+          binary: /bin/bash
+          args:
+            - "-c"
+            - "echo macnotary_input > macnotary.input && zip macnotary.input.zip macnotary.input"
+      - command: mac.sign
+        params:
+          working_dir: macnotary
+          key_id: ${macnotary_key_id}
+          secret: ${macnotary_secret}
+          service_url: ${macnotary_service_url}
+          local_zip_file: "macnotary/macnotary.input.zip"
+          bundle_id: "bundleid"
+          notarize: false
+
+modules: 
+ - name: macsign
+   repo: git@github.com:turalf/evergreen.git
+   prefix: src/mongo/db/modules
+   branch: macsign-smoke-test
+
 buildvariants:
   - name: localhost
     display_name: localhost
@@ -225,6 +248,7 @@ buildvariants:
       - localhost
     tasks:
       - name: my_group
+    modules: macsign
   - name: pod_bv
     display_name: pod_bv
     run_on:
