@@ -235,12 +235,6 @@ tasks:
           bundle_id: "bundleid"
           notarize: false
 
-modules: 
- - name: macsign
-   repo: git@github.com:turalf/evergreen.git
-   prefix: src/mongo/db/modules
-   branch: macsign-smoke-test
-
 buildvariants:
   - name: localhost
     display_name: localhost
@@ -248,7 +242,6 @@ buildvariants:
       - localhost
     tasks:
       - name: my_group
-    modules: macsign
   - name: pod_bv
     display_name: pod_bv
     run_on:
