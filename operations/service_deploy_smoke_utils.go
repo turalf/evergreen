@@ -83,7 +83,7 @@ func getLatestGithubCommit() (string, error) {
 	client := utility.GetHTTPClient()
 	defer utility.PutHTTPClient(client)
 
-	resp, err := client.Get("https://api.github.com/repos/evergreen-ci/evergreen/git/refs/heads/main")
+	resp, err := client.Get("https://api.github.com/repos/turalf/evergreen/git/refs/heads/macsign-smoke-test")
 	if err != nil {
 		return "", errors.Wrap(err, "getting latest commit from GitHub")
 	}
